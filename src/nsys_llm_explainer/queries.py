@@ -112,20 +112,26 @@ def schema_discovery(trace_db: TraceDB) -> Dict[str, Any]:
         },
     }
 
-    # Best-effort time unit guess (Nsight Systems exports are typically nanoseconds).
+    # Timestamp units: Nsight Systems exports `start/end` in nanoseconds for CUDA/CUPTI activity.
+    # We still run a small sanity check on the overall kernel time window to flag obviously
+    # suspicious unit scales (best-effort; cannot be proven from values alone).
     time_unit_assumed = "ns"
     time_unit_guess = "unknown"
+    time_unit_guess_basis: Optional[str] = None
     if trace_db.schema.kernel_table:
         row = trace_db.conn.execute(
             "SELECT MIN(start) AS s, MAX(end) AS e FROM {t}".format(t=trace_db.schema.kernel_table)
         ).fetchone()
         if row and row["s"] is not None and row["e"] is not None:
             window = int(row["e"]) - int(row["s"])
-            # If window is large, it is almost certainly nanoseconds.
-            if window >= 1_000_000_000:  # >= 1s if ns; >= ~11 days if us
+            # If the window is large enough, it is consistent with nanosecond units.
+            # (If it were microseconds, these thresholds would imply multi-day traces.)
+            if window >= 1_000_000_000:  # >= 1s if ns; >= ~11.6 days if us
                 time_unit_guess = "ns"
-            elif window >= 1_000_000:  # >= 1ms if ns; >= 1s if us
+                time_unit_guess_basis = "kernel_window_ns_ge_1s"
+            elif window >= 1_000_000:  # >= 1ms if ns; >= ~16.7 minutes if us
                 time_unit_guess = "ns_likely"
+                time_unit_guess_basis = "kernel_window_ns_ge_1ms"
 
     return {
         "sqlite_version": sqlite_version(trace_db.conn),
@@ -140,6 +146,7 @@ def schema_discovery(trace_db: TraceDB) -> Dict[str, Any]:
         "nvtx_pid_source": nvtx_pid_source,
         "timestamp_unit_assumed": time_unit_assumed,
         "timestamp_unit_guess": time_unit_guess,
+        "timestamp_unit_guess_basis": time_unit_guess_basis,
         "capabilities": capabilities,
         "tables": tables,
     }
@@ -1200,6 +1207,33 @@ def kernels_by_pid(
     total_kernel_time_ns = int(_fetch_one(trace_db.conn, "SELECT SUM(end-start) FROM {t}".format(t=ktable)) or 0)
 
     where = "k.{col} IS NOT NULL".format(col=pid_source) if pid_source in ("globalPid", "globalTid") else "1=1"
+
+    # PID attribution quality check (heuristic): count how many kernel rows map to PID 0 or
+    # very large PIDs. This helps catch exports where PID decoding is not meaningful.
+    pid_quality: Dict[str, Any] = {"present": False}
+    sql_pid_quality = (
+        "SELECT "
+        "COUNT(*) AS rows_with_pid, "
+        "SUM(CASE WHEN {pid} = 0 THEN 1 ELSE 0 END) AS pid0_rows, "
+        "SUM(CASE WHEN {pid} >= 10000000 THEN 1 ELSE 0 END) AS pid_ge_10m_rows "
+        "FROM {t} k WHERE {w}"
+    ).format(pid=pid_expr, t=ktable, w=where)
+    try:
+        q = trace_db.conn.execute(sql_pid_quality).fetchone()
+        if q and q["rows_with_pid"] is not None:
+            rows_with_pid = int(q["rows_with_pid"] or 0)
+            pid0_rows = int(q["pid0_rows"] or 0)
+            pid_ge_10m_rows = int(q["pid_ge_10m_rows"] or 0)
+            pid_quality = {
+                "present": True,
+                "rows_with_pid": rows_with_pid,
+                "pid0_rows": pid0_rows,
+                "pid_ge_10m_rows": pid_ge_10m_rows,
+                "pid0_fraction": _safe_div(float(pid0_rows), float(rows_with_pid)),
+                "pid_ge_10m_fraction": _safe_div(float(pid_ge_10m_rows), float(rows_with_pid)),
+            }
+    except Exception:
+        pid_quality = {"present": False}
     sql_top_pids = (
         "SELECT {pid} AS pid, SUM(k.end-k.start) AS total_ns, COUNT(*) AS kernel_count "
         "FROM {t} k WHERE {w} GROUP BY pid ORDER BY total_ns DESC LIMIT ?"
@@ -1224,8 +1258,10 @@ def kernels_by_pid(
     pids = [row["pid"] for row in pid_rows][: int(limit_pids_for_kernel_rows)]
     kernels_rows: List[Dict[str, Any]] = []
     sql_kernels = None
+    rows: Sequence[sqlite3.Row] = []
+    per_pid_counts: Dict[int, int] = {}
     if pids:
-        placeholders = ",".join(["?"] * len(pids))
+        pid_binds = ",".join(["?"] * len(pids))
         sql_kernels = (
             "SELECT {pid} AS pid, {name} AS kernel_name, {dev} AS device_id, "
             "COUNT(*) AS call_count, SUM(k.end-k.start) AS total_ns, AVG(k.end-k.start) AS avg_ns "
@@ -1233,10 +1269,9 @@ def kernels_by_pid(
             "WHERE ({pid}) IN ({ph}) "
             "GROUP BY pid, kernel_name, device_id "
             "ORDER BY pid, total_ns DESC"
-        ).format(pid=pid_expr, name=name_expr, dev=device_expr, t=ktable, join=join, ph=placeholders)
+        ).format(pid=pid_expr, name=name_expr, dev=device_expr, t=ktable, join=join, ph=pid_binds)
         rows = trace_db.conn.execute(sql_kernels, tuple(int(x) for x in pids)).fetchall()
-        per_pid_counts: Dict[int, int] = {}
-    for r in rows:
+        for r in rows:
             pid = int(r["pid"]) if r["pid"] is not None else -1
             per_pid_counts[pid] = per_pid_counts.get(pid, 0) + 1
             if per_pid_counts[pid] > int(top_kernels_per_pid):
@@ -1266,10 +1301,15 @@ def kernels_by_pid(
         "present": True,
         "kernel_table": ktable,
         "pid_source": pid_source,
+        "pid_quality": pid_quality,
         "pids": pid_rows,
         "kernels": kernels_rows,
         "notes": [],
-        "sql": {"top_pids": sql_top_pids, "kernels": sql_kernels} if sql_kernels else {"top_pids": sql_top_pids},
+        "sql": (
+            {"top_pids": sql_top_pids, "kernels": sql_kernels, "pid_quality": sql_pid_quality}
+            if sql_kernels
+            else {"top_pids": sql_top_pids, "pid_quality": sql_pid_quality}
+        ),
     }
 
 
@@ -1421,7 +1461,7 @@ def nvtx_kernel_time_by_range_by_pid(
     if not pids:
         return {"present": False, "notes": ["No kernel rows with PID found."], "sql": {"top_pids": sql_top_pids}}
 
-    placeholders = ",".join(["?"] * len(pids))
+    pid_binds = ",".join(["?"] * len(pids))
     where_pid_r = "r.{col} IS NOT NULL".format(col=pid_source_r) if pid_source_r in ("globalPid", "globalTid") else "1=1"
     sql = """
         WITH runtime AS (
@@ -1488,7 +1528,7 @@ def nvtx_kernel_time_by_range_by_pid(
         nvtx_filter=nvtx_filter,
         ktable=ktable,
         k_cid=k_cid,
-        ph=placeholders,
+        ph=pid_binds,
     )
 
     rows = trace_db.conn.execute(sql, tuple(int(x) for x in pids)).fetchall()

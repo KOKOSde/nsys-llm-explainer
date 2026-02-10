@@ -130,6 +130,15 @@ def analyze(
                 nvtx_kernel_phases_by_pid.append({"pid": pid, "phases": phases.get("phases") or []})
 
     warnings: List[str] = []
+    # Timestamp units: we interpret `start/end` as nanoseconds (Nsight Systems CUPTI exports),
+    # but unit scale cannot be proven from values alone. If we can't even run a sanity check,
+    # warn explicitly to avoid false precision.
+    ts_guess = str(schema.get("timestamp_unit_guess") or "unknown")
+    if ts_guess == "unknown":
+        warnings.append(
+            "Timestamp unit could not be sanity-checked from this export. The report assumes `start/end` are nanoseconds; "
+            "if your export uses different units, all time values (ms/us) will be wrong."
+        )
     if nvtx_kernel.get("present") and compute_nvtx_kernel_map:
         cov = float(nvtx_kernel.get("coverage_fraction") or 0.0)
         if cov < float(nvtx_coverage_warn_threshold):
@@ -209,6 +218,23 @@ def analyze(
                     len(n_pids),
                 )
             )
+
+        # If most kernel rows decode to PID 0 or to very large PIDs, warn explicitly.
+        pq = by_pid_kernels.get("pid_quality") or {}
+        if isinstance(pq, dict) and pq.get("present"):
+            pid0_frac = float(pq.get("pid0_fraction") or 0.0)
+            pid_ge_10m_frac = float(pq.get("pid_ge_10m_fraction") or 0.0)
+            pid_src = str(by_pid_kernels.get("pid_source"))
+            if pid0_frac >= 0.80:
+                warnings.append(
+                    "PID decoding looks suspicious: {:.1f}% of kernel rows map to PID 0 (PID source `{}`). "
+                    "Per-PID breakdowns may be misleading for this export.".format(pid0_frac * 100.0, pid_src)
+                )
+            if pid_ge_10m_frac >= 0.80:
+                warnings.append(
+                    "PID decoding looks suspicious: {:.1f}% of kernel rows map to PID >= 10,000,000 (PID source `{}`). "
+                    "Per-PID breakdowns may be misleading for this export.".format(pid_ge_10m_frac * 100.0, pid_src)
+                )
     except Exception:
         pid_attr = {"present": False}
 
@@ -623,6 +649,23 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                 lines.append("")
     else:
         lines.append("_(no NVTX PID breakdown available)_")
+    lines.append("")
+
+    lines.append("## Derivation & assumptions")
+    lines.append("")
+    lines.append("- **Timestamp units**: report interprets `start/end` as **nanoseconds** and converts to ms/us via `/1e6` and `/1e3`.")
+    lines.append(
+        "- **Timestamp sanity check**: `timestamp_unit_guess={}` (basis `{}`). If `unknown`, treat time-derived numbers as suspect.".format(
+            str(schema.get("timestamp_unit_guess")), str(schema.get("timestamp_unit_guess_basis"))
+        )
+    )
+    lines.append("- **Kernel durations**: `end-start` from `{}` summed over launches (no overlap correction).".format(schema.get("kernel_table")))
+    lines.append("- **GPU idle estimate**: per-device union of kernel intervals within the kernel time window; excludes memcpy/memset unless you extend the tool.")
+    lines.append(
+        "- **NVTX→kernel attribution**: best-effort correlation (`kernel.correlationId` → runtime launch site → `globalTid` → enclosing NVTX range). "
+        "Coverage is reported; low coverage means per-phase attribution may not reflect total GPU time."
+    )
+    lines.append("- **Per-PID attribution**: best-effort decoding from available PID-bearing columns (`pid`, `processId`, `globalPid`, `globalTid`).")
     lines.append("")
 
     return "\n".join(lines) + "\n"
