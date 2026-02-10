@@ -1,0 +1,31 @@
+kernel_name,device_id,call_count,total_time_ns,total_time_ms,avg_duration_us,min_duration_us,max_duration_us,p50_duration_us,p90_duration_us,pct_total_kernel_time
+ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn,0,3612,47015035,47.015035,13.016344130675527,9.664,17.408,12.288,16.864,9.86599961660815
+"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<signed char>, std::array<char *, (unsigned long)1>>(int, T2, T3)",0,56,40421156,40.421156,721.8063571428571,697.472,738.848,724.128,731.856,8.48228890181318
+ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn,0,2940,32166984,32.166984,10.941151020408162,9.247,20.48,10.113,12.352,6.750169425832405
+reshape_and_cache_kernel_flash,0,5656,28817926,28.817926,5.0951071428571435,1.952,16.256,3.6805,10.5915,6.047377118137677
+ampere_fp16_s16816gemm_fp16_128x128_ldg8_f2f_stages_32x5_tn,0,252,27021740,27.02174,107.22912698412698,32.8,405.312,33.184,404.0928,5.670451515777561
+ampere_fp16_s16816gemm_fp16_128x128_ldg8_f2f_stages_64x3_tn,0,1232,23210130,23.21013,18.839391233766232,18.336,20.096,18.944,19.2,4.870593708617366
+ampere_fp16_s16816gemm_fp16_128x64_ldg8_f2f_stages_32x6_tn,0,1456,22391566,22.391566,15.378822802197803,7.488,23.489,14.56,22.336,4.698819889664148
+ampere_fp16_s16816gemm_fp16_128x64_ldg8_f2f_stages_64x4_tn,0,1512,21129073,21.129073,13.97425462962963,9.952,24.736,12.16,24.352,4.433888566014799
+void cutlass::Kernel2<cutlass_80_wmma_tensorop_s161616gemm_f16_32x32_128x2_tn_align8>(T1::Params),0,1904,19597808,19.597808,10.292966386554623,9.919,11.583,10.272,10.464,4.112556041154923
+sm80_xmma_gemm_f16f16_f16f32_f32_tn_n_tilesize32x32x64_stage6_warpsize2x2x1_tensor16x8x16_execute_kernel__5x_cublas,0,2128,19124426,19.124426,8.987042293233083,8.416,11.2,8.736,10.08,4.013217890486541
+kernel_unified_attention_2d,0,896,17051036,17.051036,19.03017410714286,5.44,32.96,19.2,30.32,3.578121650633074
+triton_poi_fused_mul_silu_slice_1,0,4256,14141735,14.141735,3.322776080827068,1.728,87.04,2.4,4.32,2.9676113627943494
+ampere_fp16_s16816gemm_fp16_128x64_ldg8_f2f_stages_64x3_tn,0,120,13584995,13.584995,113.20829166666667,29.024,186.4,182.688,184.10559999999998,2.8507807228394837
+triton_poi_fused_4,0,4104,13233113,13.233113,3.224442738791423,2.24,55.04,2.688,3.712,2.776939074586083
+triton_per_fused__to_copy_add_mean_mul_pow_rsqrt_2,0,4256,13032336,13.032336,3.062109022556391,2.047,47.008,2.624,3.68,2.734806471578902
+triton_per_fused__to_copy_add_mean_mul_pow_rsqrt_0,0,4256,11612513,11.612513,2.7285039943609024,1.952,32.384,2.432,3.2,2.4368598003991093
+kernel_unified_attention_3d,0,1876,11298317,11.298317,6.022557036247335,4.896,8.096,6.015,6.24,2.3709264746972396
+triton_red_fused_3,0,4104,10810527,10.810527,2.6341440058479533,1.951,34.272,2.528,3.072,2.2685648375531793
+void cutlass::Kernel2<cutlass_80_tensorop_f16_s16816gemm_relu_f16_128x128_32x5_tn_align8>(T1::Params),0,28,7787936,7.787936,278.14057142857143,276.864,279.328,278.208,278.9955,1.6342808973803553
+ampere_fp16_s16816gemm_fp16_256x128_ldg8_f2f_stages_32x3_tn,0,224,7005589,7.005589,31.27495089285714,31.136,31.712,31.264,31.328,1.4701071346243657
+reduce_segments,0,1876,6810310,6.81031,3.63022921108742,3.2,5.216,3.584,3.808,1.4291282745824319
+"void at::native::vectorized_elementwise_kernel<(int)4, at::native::FillFunctor<c10::Half>, std::array<char *, (unsigned long)1>>(int, T2, T3)",0,3026,6794357,6.794357,2.2453261731658953,1.536,18.464,2.08,2.528,1.4257805733229572
+"void cublasLt::splitKreduce_kernel<(int)32, (int)16, int, float, __half, float, __half, (bool)0, __half, __half, __half, (bool)1, (bool)0, (bool)0>(cublasLt::cublasSplitKParams<T6>, const T4 *, const T10 *, T9 *, T5 *, const T6 *, const T6 *, const T11 *, const T4 *, T11 *, void *, long, T6 *, int *, T6 *, T6 *, const T6 *, const T6 *, const T6 *, const T6 *, const T6 *)",0,2408,6733181,6.733181,2.796171511627907,2.624,4.128,2.688,3.135,1.412942926971197
+"void at_cuda_detail::cub::DeviceSegmentedRadixSortKernel<at_cuda_detail::cub::DeviceRadixSortPolicy<float, long, int>::Policy900, (bool)1, (bool)0, float, long, at::native::<unnamed>::offset_t, at::native::<unnamed>::offset_t, int, at_cuda_detail::cub::detail::identity_decomposer_t>(const T4 *, T4 *, const T5 *, T5 *, T6, T7, int, int, int, T9)",0,8,6574400,6.5744,821.8,754.048,900.608,820.224,895.8592,1.3796230903460693
+sm80_xmma_gemm_f16f16_f16f32_f32_tn_n_tilesize96x128x32_stage4_warpsize2x2x1_tensor16x8x16_execute_kernel__5x_cublas,0,224,5818336,5.818336,25.974714285714285,25.568,26.4,25.984,26.144,1.2209647561742194
+ampere_fp16_s16816gemm_fp16_64x64_ldg8_f2f_stages_64x5_tn,0,420,5463199,5.463199,13.007616666666667,7.071,19.104,12.256,18.464,1.1464400534734054
+sm80_xmma_gemm_f16f16_f16f32_f32_tn_n_tilesize96x64x64_stage4_warpsize2x2x1_tensor16x8x16_execute_kernel__5x_cublas,0,308,5266940,5.26694,17.100454545454543,15.84,18.208,17.472,17.8883,1.1052555426300996
+"void at::native::vectorized_elementwise_kernel<(int)2, at::native::FillFunctor<long>, std::array<char *, (unsigned long)1>>(int, T2, T3)",0,3036,5201876,5.201876,1.7133978919631092,1.664,1.92,1.696,1.728,1.0916020082010602
+"void at_cuda_detail::cub::DeviceSegmentedRadixSortKernel<at_cuda_detail::cub::DeviceRadixSortPolicy<float, long, int>::Policy900, (bool)0, (bool)0, float, long, at::native::<unnamed>::offset_t, at::native::<unnamed>::offset_t, int, at_cuda_detail::cub::detail::identity_decomposer_t>(const T4 *, T4 *, const T5 *, T5 *, T6, T7, int, int, int, T9)",0,4,4126048,4.126048,1031.512,905.056,1161.088,1029.952,1157.0272,0.8658419160191376
+ampere_s16816gemm_fp16_128x64_ldg8_stages_32x6_tn,0,448,3644132,3.644132,8.134223214285715,7.104,9.408,8.032,9.088,0.7647129245967696
