@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nsys-llm-explainer"
+version = "0.1.0"
+description = "Offline Nsight Systems (SQLite) explainer for LLM inference hotspots"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Contributors" }]
+keywords = ["nsys", "nsight", "sqlite", "cuda", "llm", "vllm", "profiling", "performance"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.optional-dependencies]
+pandas = ["pandas"]
+
+[project.scripts]
+nsys-llm-explain = "nsys_llm_explainer.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
