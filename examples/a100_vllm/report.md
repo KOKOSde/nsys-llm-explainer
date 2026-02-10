@@ -163,6 +163,12 @@ Top tiny kernels by call count:
 - **Derived from**: union of kernel intervals from `CUPTI_ACTIVITY_KIND_KERNEL` (per device if `deviceId` exists).
 - **Limitations**: approximate/conservative; excludes memcpy/memset/other GPU activities; overlap across streams is merged (union).
 
+Interpretation note for this example:
+
+- The idle% is computed over the **observed kernel time window** in the exported SQLite (from first kernel start to last kernel end).
+- If the capture includes startup/warmup, long pauses between requests, or an idle tail after work completes, the window can include long spans with **no kernels** and the idle% will look extreme.
+- For steady-state analysis, capture a short window around decode after warmup (seconds), and avoid including model load or long idle tails.
+
 | device_id | window_ms | busy_ms | idle_ms | idle_pct_of_window |
 | --- | --- | --- | --- | --- |
 | 0 | 83203.799 | 476.536 | 82727.263 | 99.4 |
