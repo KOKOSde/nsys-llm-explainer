@@ -1,0 +1,4 @@
+range_name,count,total_time_ms,avg_duration_us
+ncclGroupStart,14,19.844443,1417.4602142857143
+cub::DeviceSegmentedRadixSort,2,0.146888,73.444
+ncclGroupEnd,14,0.005811,0.41507142857142854

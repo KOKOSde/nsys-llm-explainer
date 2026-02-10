@@ -74,6 +74,25 @@ The output directory will contain:
 
 See `examples/a100_vllm/` for a committed, real capture (outputs only). The raw `trace.sqlite` is intentionally omitted to keep the repo small.
 
+Report excerpt (from `examples/a100_vllm/report.md`):
+
+```text
+## Warnings
+
+- NVTX-attributed GPU time is best-effort (NVTX→runtime→kernel correlation). Coverage is 2.2% (< 70.0%). Low coverage → interpret cautiously.
+
+## What to do next
+
+- [medium] CPU↔GPU synchronization detected (runtime API)
+  - Evidence: Top sync-like call cudaEventSynchronize total 129.97 ms across 129 calls.
+- [high] Significant GPU idle gaps
+  - Evidence: GPU 0 idle 99.4% of observed window (82727.3 ms / 83203.8 ms).
+
+## Global: top CUDA kernels (by total time)
+| kernel_name | device_id | total_ms | calls | avg_us | p50_us | p90_us | pct_kernel_time |
+| ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn | 0 | 47.015 | 3612 | 13.02 | 12.29 | 16.86 | 9.9 |
+```
+
 The generated `report.md` includes:
 
 - A “What to do next” section with trace-backed findings
