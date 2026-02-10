@@ -42,10 +42,13 @@ if ! command -v nsys >/dev/null 2>&1; then
   exit 127
 fi
 
-# Optional: activate a venv directly (set VLLM_VENV=/path/to/venv)
+# Python environment: prefer an explicit venv python if provided.
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH || true
+
+PYTHON_BIN="${PYTHON_BIN:-python}"
 if [[ -n "${VLLM_VENV:-}" ]]; then
-  # shellcheck disable=SC1090
-  source "${VLLM_VENV}/bin/activate"
+  PYTHON_BIN="${VLLM_VENV}/bin/python"
 fi
 
 ###############################################################################
@@ -62,8 +65,17 @@ from vllm import LLM, SamplingParams
 model = os.environ.get("MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 dtype = os.environ.get("DTYPE", "float16")
 enforce_eager = os.environ.get("ENFORCE_EAGER", "1") != "0"
+attn_backend = os.environ.get("ATTENTION_BACKEND", "").strip()
 
-llm = LLM(model=model, dtype=dtype, tensor_parallel_size=1, enforce_eager=enforce_eager)
+attention_config = {"backend": attn_backend} if attn_backend else None
+
+llm = LLM(
+    model=model,
+    dtype=dtype,
+    tensor_parallel_size=1,
+    enforce_eager=enforce_eager,
+    attention_config=attention_config,
+)
 params = SamplingParams(max_tokens=32, temperature=0.0)
 
 batch = int(os.environ.get("BATCH", "8"))
@@ -82,13 +94,14 @@ for _ in range(iters):
 print("done")
 PY
 
-WORKLOAD_CMD=(python "${OUT_DIR}/workload_vllm.py")
+WORKLOAD_CMD=("${PYTHON_BIN}" "${OUT_DIR}/workload_vllm.py")
 
 ###############################################################################
 # Nsight Systems capture (CUDA + NVTX if present)
 ###############################################################################
 NSYS_TRACE_FLAGS=(
   --trace=cuda,nvtx,osrt
+  --cuda-graph-trace=node
   --sample=none
   --cpuctxsw=none
   --force-overwrite=true
@@ -99,7 +112,7 @@ echo "Profiling workload with nsys..."
 nsys profile "${NSYS_TRACE_FLAGS[@]}" "${WORKLOAD_CMD[@]}"
 
 echo "Exporting SQLite..."
-nsys export --type sqlite --output "${OUT_DIR}/trace.sqlite" "${TRACE_PREFIX}.nsys-rep"
+nsys export --type sqlite --output "${OUT_DIR}/trace.sqlite" --force-overwrite=true --lazy=false "${TRACE_PREFIX}.nsys-rep"
 
 ###############################################################################
 # Record run metadata (for README/examples)
@@ -117,10 +130,10 @@ nsys export --type sqlite --output "${OUT_DIR}/trace.sqlite" "${TRACE_PREFIX}.ns
   nvidia-smi -L || true
   echo ""
   echo "python:"
-  python -V || true
+  "${PYTHON_BIN}" -V || true
   echo ""
   echo "vllm_version:"
-  python -c "import importlib.metadata as md; print(md.version('vllm'))" 2>/dev/null || true
+  "${PYTHON_BIN}" -c "import importlib.metadata as md; print(md.version('vllm'))" 2>/dev/null || true
   echo ""
   echo "command_nsys_profile:"
   printf "nsys profile"
@@ -136,8 +149,8 @@ nsys export --type sqlite --output "${OUT_DIR}/trace.sqlite" "${TRACE_PREFIX}.ns
 # Analyze SQLite offline
 ###############################################################################
 echo "Running explainer..."
-python -m pip install -e "nsys_llm_explainer" >/dev/null
-nsys-llm-explain "${OUT_DIR}/trace.sqlite" --out "${OUT_DIR}/"
+"${PYTHON_BIN}" -m pip install -e "nsys_llm_explainer" >/dev/null
+"${PYTHON_BIN}" -m nsys_llm_explainer.cli "${OUT_DIR}/trace.sqlite" --out "${OUT_DIR}/"
 
 echo "Done. Report: ${OUT_DIR}/report.md"
 
