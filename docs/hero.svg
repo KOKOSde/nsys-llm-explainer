@@ -1,62 +1,133 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-label="nsys-llm-explain pipeline diagram">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-label="nsys-llm-explain pipeline diagram">
   <defs>
+    <linearGradient id="grad-gpu" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#76b900;stop-opacity:0.15" />
+      <stop offset="100%" style="stop-color:#0f1a33;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad-tool" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.2" />
+      <stop offset="100%" style="stop-color:#1e3a8a;stop-opacity:0.3" />
+    </linearGradient>
+    <linearGradient id="grad-stroke" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#3b82f6" />
+      <stop offset="100%" style="stop-color:#8b5cf6" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    
     <style>
       .bg { fill: #0b1220; }
-      .box { fill: #0f1a33; stroke: #2a3a66; stroke-width: 2; rx: 14; ry: 14; }
-      .title { fill: #e6eefc; font: 700 24px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
-      .text { fill: #c7d4f4; font: 600 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
-      .muted { fill: #93a6d6; font: 500 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
-      .mono { fill: #d7e2ff; font: 600 14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-      .arrow { stroke: #6aa6ff; stroke-width: 3; fill: none; }
-      .pill { fill: #152552; stroke: #2a3a66; stroke-width: 1.5; rx: 10; ry: 10; }
+      .box-base { fill: #0f1a33; stroke: #2a3a66; stroke-width: 2; rx: 12; }
+      .box-gpu { fill: url(#grad-gpu); stroke: #466e00; stroke-width: 1.5; rx: 12; }
+      .box-tool { fill: url(#grad-tool); stroke: url(#grad-stroke); stroke-width: 3; rx: 12; }
+      
+      .title { fill: #ffffff; font: 700 28px ui-sans-serif, system-ui, -apple-system, sans-serif; }
+      .subtitle { fill: #94a3b8; font: 400 16px ui-sans-serif, system-ui, -apple-system, sans-serif; }
+      
+      .step-num { fill: #64748b; font: 700 40px ui-sans-serif, system-ui, sans-serif; opacity: 0.2; }
+      .step-title { fill: #e2e8f0; font: 600 18px ui-sans-serif, system-ui, sans-serif; }
+      
+      .cmd-box { fill: #1e293b; rx: 6; }
+      .cmd-text { fill: #a5b4fc; font: 500 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .desc-text { fill: #94a3b8; font: 400 14px ui-sans-serif, system-ui, sans-serif; }
+      
+      .pill { fill: #1e293b; stroke: #334155; stroke-width: 1; rx: 14; }
+      .pill-highlight { fill: #281d18; stroke: #f59e0b; stroke-width: 1; rx: 14; }
+      .pill-text { fill: #cbd5e1; font: 500 13px ui-sans-serif, system-ui, sans-serif; }
+      .pill-text-h { fill: #fbbf24; font: 600 13px ui-sans-serif, system-ui, sans-serif; }
+      
+      .arrow-line { stroke: #475569; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+      .icon-fill { fill: #64748b; }
+      .icon-accent { fill: #3b82f6; }
     </style>
-    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
-      <path d="M0,0 L10,5 L0,10 Z" fill="#6aa6ff" />
+    
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 Z" fill="#475569" />
     </marker>
   </defs>
 
-  <rect class="bg" x="0" y="0" width="1200" height="360" />
+  <rect class="bg" width="1200" height="400" />
 
-  <text class="title" x="42" y="56">Nsight Systems SQLite to actionable LLM hotspot report</text>
-  <text class="muted" x="42" y="82">Offline: trace.sqlite in, report.md/json + CSV tables out (A100-first; multi-process aware).</text>
+  <text class="title" x="40" y="50">nsys-llm-explainer</text>
+  <text class="subtitle" x="40" y="80">Turn raw SQLite traces into actionable bottlenecks, launch storms, and hotspot analysis.</text>
 
-  <!-- Pipeline stages -->
-  <rect class="box" x="40" y="120" width="250" height="170" />
-  <text class="text" x="64" y="154">1) Capture</text>
-  <text class="mono" x="64" y="182">nsys profile ...</text>
-  <text class="muted" x="64" y="212">CUDA (+ optional NVTX)</text>
-  <text class="muted" x="64" y="236">inference workload</text>
+  <g transform="translate(40, 130)">
+    <rect class="box-gpu" width="260" height="220" />
+    <text class="step-num" x="20" y="50">01</text>
+    <text class="step-title" x="70" y="45">Capture</text>
+    
+    <path class="icon-fill" d="M20 80 h20 v20 h-20 z" opacity="0" /> <rect class="cmd-box" x="20" y="70" width="220" height="40" />
+    <text class="cmd-text" x="30" y="95">$ nsys profile ...</text>
+    
+    <text class="desc-text" x="20" y="140">Profiling CUDA workloads</text>
+    <text class="desc-text" x="20" y="160">inference &amp; training</text>
+    
+    <rect class="pill" x="20" y="180" width="100" height="26" />
+    <text class="pill-text" x="35" y="198">.nsys-rep</text>
+  </g>
 
-  <rect class="box" x="330" y="120" width="250" height="170" />
-  <text class="text" x="354" y="154">2) Export</text>
-  <text class="mono" x="354" y="182">nsys export --type sqlite</text>
-  <text class="muted" x="354" y="212">produces</text>
-  <text class="mono" x="354" y="236">trace.sqlite</text>
+  <path class="arrow-line" d="M310 240 L340 240" marker-end="url(#arrowhead)" />
 
-  <rect class="box" x="620" y="120" width="250" height="170" />
-  <text class="text" x="644" y="154">3) Explain</text>
-  <text class="mono" x="644" y="182">nsys-llm-explain trace.sqlite</text>
-  <text class="muted" x="644" y="212">schema probing + fallbacks</text>
-  <text class="muted" x="644" y="236">NVTX coverage + per-PID (best-effort)</text>
+  <g transform="translate(350, 130)">
+    <rect class="box-base" width="220" height="220" />
+    <text class="step-num" x="20" y="50">02</text>
+    <text class="step-title" x="70" y="45">Export</text>
+    
+    <path class="icon-fill" transform="translate(180, 20) scale(0.8)" d="M4 10c0-2.21 4.48-4 10-4s10 1.79 10 4c0 .85-.66 1.64-1.8 2.3l.02.2c0 2.21-4.48 4-10 4s-10-1.79-10-4l.02-.2C5.66 12.64 4 11.85 4 10z M4 16c0 2.21 4.48 4 10 4s10-1.79 10-4v-4.66c-1.8 1.06-5.61 1.66-10 1.66s-8.2-.6-10-1.66V16z" />
 
-  <rect class="box" x="910" y="120" width="250" height="170" />
-  <text class="text" x="934" y="154">4) Outputs</text>
-  <text class="mono" x="934" y="182">report.md</text>
-  <text class="mono" x="934" y="204">report.json</text>
-  <text class="mono" x="934" y="226">tables/*.csv</text>
+    <rect class="cmd-box" x="20" y="70" width="180" height="40" />
+    <text class="cmd-text" x="30" y="95">$ nsys export</text>
+    
+    <text class="desc-text" x="20" y="140">Convert proprietary format</text>
+    <text class="desc-text" x="20" y="160">to standard SQLite</text>
+    
+    <rect class="pill" x="20" y="180" width="100" height="26" />
+    <text class="pill-text" x="35" y="198">trace.sqlite</text>
+  </g>
 
-  <!-- Arrows -->
-  <path class="arrow" d="M290 205 L330 205" marker-end="url(#arrowhead)" />
-  <path class="arrow" d="M580 205 L620 205" marker-end="url(#arrowhead)" />
-  <path class="arrow" d="M870 205 L910 205" marker-end="url(#arrowhead)" />
+  <path class="arrow-line" d="M580 240 L610 240" marker-end="url(#arrowhead)" />
 
-  <!-- Output highlights -->
-  <rect class="pill" x="932" y="248" width="206" height="28" />
-  <text class="muted" x="944" y="268">Top kernels + percentiles</text>
+  <g transform="translate(620, 120)">
+    <rect class="box-tool" width="260" height="240" filter="url(#glow)" />
+    <rect class="box-tool" width="260" height="240" fill-opacity="0" /> <text class="step-num" x="20" y="55" style="fill:#8b5cf6; opacity:0.3">03</text>
+    <text class="step-title" x="75" y="50" style="fill:#fff; font-size: 20px;">Analysis</text>
+    
+    <path class="icon-accent" transform="translate(210, 20) scale(1.2)" d="M10 2l1.5 4.5L16 8l-4.5 1.5L10 14l-1.5-4.5L4 8l4.5-1.5z" />
 
-  <rect class="pill" x="932" y="282" width="206" height="28" />
-  <text class="muted" x="944" y="302">Launch storm + suspects</text>
+    <rect class="cmd-box" x="20" y="80" width="220" height="40" style="fill:#0f172a; stroke:#6366f1; stroke-width:1"/>
+    <text class="cmd-text" x="30" y="105">$ nsys-llm-explain</text>
+    
+    <text class="desc-text" x="20" y="150" style="fill:#c7d2fe">Schema Probing</text>
+    <text class="desc-text" x="20" y="170" style="fill:#c7d2fe">NVTX Coverage calculation</text>
+    <text class="desc-text" x="20" y="190" style="fill:#c7d2fe">Heuristic Fallbacks</text>
+    
+    <circle cx="230" cy="210" r="4" fill="#6366f1">
+      <animate attributeName="opacity" values="0.2;1;0.2" dur="2s" repeatCount="indefinite" />
+    </circle>
+  </g>
 
-  <rect class="pill" x="932" y="316" width="206" height="28" />
-  <text class="muted" x="944" y="336">Sync, idle gaps, NVTX, per-PID</text>
-  </svg>
+  <path class="arrow-line" d="M890 240 L920 240" marker-end="url(#arrowhead)" />
+
+  <g transform="translate(930, 130)">
+    <rect class="box-base" width="230" height="220" />
+    <text class="step-num" x="20" y="50">04</text>
+    <text class="step-title" x="70" y="45">Actionable</text>
+    
+    <g transform="translate(20, 80)">
+        <rect class="pill-highlight" width="190" height="30" />
+        <text class="pill-text-h" x="15" y="20">⚠️ Top Kernel Hotspots</text>
+        
+        <rect class="pill" y="40" width="190" height="28" />
+        <text class="pill-text" x="15" y="59">📄 report.md (Summary)</text>
+        
+        <rect class="pill" y="76" width="190" height="28" />
+        <text class="pill-text" x="15" y="95">📊 report.json (Raw)</text>
+        
+        <rect class="pill" y="112" width="190" height="28" />
+        <text class="pill-text" x="15" y="131">📉 tables/*.csv</text>
+    </g>
+  </g>
+
+</svg>
