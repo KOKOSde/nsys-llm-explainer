@@ -1,8 +1,12 @@
 import json
+import sys
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+
+# Allow tests to run without installing the package.
+sys.path.insert(0, str((Path(__file__).resolve().parents[1] / "src").resolve()))
 
 from nsys_llm_explainer.queries import (
     TraceDB,
