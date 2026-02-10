@@ -117,16 +117,16 @@
     
     <g transform="translate(20, 80)">
         <rect class="pill-highlight" width="190" height="30" />
-        <text class="pill-text-h" x="15" y="20">⚠️ Top Kernel Hotspots</text>
+        <text class="pill-text-h" x="15" y="20">Top kernel hotspots</text>
         
         <rect class="pill" y="40" width="190" height="28" />
-        <text class="pill-text" x="15" y="59">📄 report.md (Summary)</text>
+        <text class="pill-text" x="15" y="59">report.md (summary)</text>
         
         <rect class="pill" y="76" width="190" height="28" />
-        <text class="pill-text" x="15" y="95">📊 report.json (Raw)</text>
+        <text class="pill-text" x="15" y="95">report.json (raw)</text>
         
         <rect class="pill" y="112" width="190" height="28" />
-        <text class="pill-text" x="15" y="131">📉 tables/*.csv</text>
+        <text class="pill-text" x="15" y="131">tables/*.csv</text>
     </g>
   </g>
 

@@ -75,6 +75,16 @@ Excerpt (from `examples/a100_vllm/report.md`):
 | ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn | 0 | 47.015 | 3612 | 13.02 | 12.29 | 16.86 | 9.9 |
 ```
 
+### Tested on (real example capture)
+
+From `examples/a100_vllm/metadata.txt`:
+
+- **GPU**: NVIDIA A100-SXM4-80GB
+- **Nsight Systems**: 2023.4.4.54-234433681190v0
+- **Python**: 3.12.12
+- **vLLM**: 0.15.2rc1.dev110+g785cf28ff.d20260209
+- **OS / driver / CUDA / PyTorch**: not recorded in this capture (outputs-only example)
+
 ### Steady-state capture guidance (idle% can be misleading)
 
 “GPU idle” is computed over the **observed kernel time window** (first kernel start → last kernel end). If your capture includes model load, long warmup, or a long idle tail, idle% can look extreme.
@@ -136,4 +146,10 @@ Key probes and fallbacks:
 ### References
 
 - Nsight Systems SQLite exporter schema reference: `https://docs.nvidia.com/nsight-systems/` (see `nsys-exporter` docs for your version).
+
+### Roadmap (near-term)
+
+- Add a small “known-good schema” matrix per Nsight Systems version (tables/columns observed).
+- Add optional inclusion of memcpy/memset activity into the “busy/idle” estimate.
+- Add guidance for common inference stacks (vLLM, torch.compile, CUDA graphs) in the runbook.
 
