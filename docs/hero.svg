@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-label="nsys-llm-explain pipeline diagram">
+  <defs>
+    <style>
+      .bg { fill: #0b1220; }
+      .box { fill: #0f1a33; stroke: #2a3a66; stroke-width: 2; rx: 14; ry: 14; }
+      .title { fill: #e6eefc; font: 700 24px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+      .text { fill: #c7d4f4; font: 500 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+      .muted { fill: #93a6d6; font: 500 14px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+      .mono { fill: #d7e2ff; font: 600 14px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+      .arrow { stroke: #6aa6ff; stroke-width: 3; fill: none; }
+      .callout { fill: #152552; stroke: #2a3a66; stroke-width: 1.5; rx: 10; ry: 10; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#6aa6ff" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="360" />
+
+  <text class="title" x="42" y="56">Nsight Systems SQLite ’ actionable LLM bottleneck report</text>
+  <text class="muted" x="42" y="82">Offline analysis for vLLM-style multi-process traces (A100-first). No benchmark claims; trace-derived evidence + explicit limitations.</text>
+
+  <!-- Stage boxes -->
+  <rect class="box" x="40" y="120" width="250" height="170" />
+  <text class="text" x="64" y="154">1) Capture</text>
+  <text class="mono" x="64" y="182">nsys profile ...</text>
+  <text class="muted" x="64" y="208">CUDA + (optional) NVTX</text>
+  <text class="muted" x="64" y="232">vLLM server + workers</text>
+  <text class="muted" x="64" y="256">A100 (one node)</text>
+
+  <rect class="box" x="330" y="120" width="250" height="170" />
+  <text class="text" x="354" y="154">2) Export</text>
+  <text class="mono" x="354" y="182">nsys export --type sqlite</text>
+  <text class="muted" x="354" y="208">Produces:</text>
+  <text class="mono" x="354" y="232">trace.sqlite</text>
+  <text class="muted" x="354" y="256">Portable, offline input</text>
+
+  <rect class="box" x="620" y="120" width="250" height="170" />
+  <text class="text" x="644" y="154">3) Explain</text>
+  <text class="mono" x="644" y="182">nsys-llm-explain trace.sqlite</text>
+  <text class="muted" x="644" y="208">Robust to missing tables</text>
+  <text class="muted" x="644" y="232">Per-PID when available</text>
+  <text class="muted" x="644" y="256">NVTX kernel-time coverage</text>
+
+  <rect class="box" x="910" y="120" width="250" height="170" />
+  <text class="text" x="934" y="154">4) Outputs</text>
+  <text class="mono" x="934" y="182">report.md   report.json</text>
+  <text class="mono" x="934" y="206">tables/*.csv</text>
+
+  <!-- Arrows -->
+  <path class="arrow" d="M290 205 L330 205" marker-end="url(#arrowhead)" />
+  <path class="arrow" d="M580 205 L620 205" marker-end="url(#arrowhead)" />
+  <path class="arrow" d="M870 205 L910 205" marker-end="url(#arrowhead)" />
+
+  <!-- Output callouts -->
+  <rect class="callout" x="930" y="228" width="210" height="34" />
+  <text class="text" x="944" y="251">Top kernels</text>
+
+  <rect class="callout" x="930" y="270" width="210" height="34" />
+  <text class="text" x="944" y="293">Launch storm</text>
+
+  <rect class="callout" x="930" y="312" width="210" height="34" />
+  <text class="text" x="944" y="335">Sync + GPU idle + NVTX + per-PID</text>
+</svg>

@@ -1,6 +1,16 @@
 ## nsys-llm-explainer
 
-Offline tool that turns an Nsight Systems **SQLite export** into an actionable performance report for **LLM inference** (vLLM-focused, but generally useful).
+[![CI](https://github.com/KOKOSde/nsys-llm-explainer/actions/workflows/ci.yml/badge.svg)](https://github.com/KOKOSde/nsys-llm-explainer/actions/workflows/ci.yml)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+
+![nsys-llm-explainer hero diagram](docs/hero.svg)
+
+### Why this exists
+
+Nsight Systems traces are powerful, but the SQLite export is still hard to interpret when you’re chasing LLM inference bottlenecks.
+This tool turns a `trace.sqlite` into a concise, actionable report: top kernels, launch storms, sync indicators, GPU idle gaps, NVTX phases, and per-PID breakdowns.
+It is designed for **vLLM-style multi-process traces** (server + workers) and is **A100-first** (capture/runbook assumes A100).
+Every number in the report is derived from concrete SQLite queries, and the report includes explicit limitations/coverage so you can judge confidence.
 
 ### Install (editable)
 
@@ -10,22 +20,23 @@ python3.9 -m pip install -e .
 
 ### Generate `trace.sqlite`
 
-From a collected `.nsys-rep`:
+Capture a trace and export SQLite:
 
 ```bash
+nsys profile --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none -o trace python your_workload.py
 nsys export --type sqlite --output trace.sqlite your_trace.nsys-rep
 ```
 
 ### Run
 
 ```bash
-nsys-llm-explain trace.sqlite --out artifacts/<run_id>/
+nsys-llm-explain trace.sqlite --out artifacts/run_YYYYMMDD_HHMMSS/
 ```
 
 Optional NVTX phase mapping (maps arbitrary NVTX range names into phases like `prefill`/`decode`/`sampling`):
 
 ```bash
-nsys-llm-explain trace.sqlite --out artifacts/<run_id>/ --phase-map phases.json
+nsys-llm-explain trace.sqlite --out artifacts/run_YYYYMMDD_HHMMSS/ --phase-map phases.json
 ```
 
 `--phases-json` is accepted as an alias for `--phase-map`.
@@ -33,7 +44,7 @@ nsys-llm-explain trace.sqlite --out artifacts/<run_id>/ --phase-map phases.json
 You can tune when the report emits a warning for low NVTX→kernel attribution coverage:
 
 ```bash
-nsys-llm-explain trace.sqlite --out artifacts/<run_id>/ --nvtx-coverage-warn-threshold 0.7
+nsys-llm-explain trace.sqlite --out artifacts/run_YYYYMMDD_HHMMSS/ --nvtx-coverage-warn-threshold 0.7
 ```
 
 Example `phases.json`:
@@ -59,21 +70,14 @@ The output directory will contain:
 - `tables/sync_by_pid.csv`: sync-like runtime calls grouped by PID (best-effort)
 - `tables/nvtx_by_pid.csv`: NVTX ranges grouped by PID (best-effort; written when NVTX is present)
 
-### Example report excerpt (shape)
+### Example: real A100 vLLM trace
+
+See `examples/a100_vllm/` for a committed, real capture (outputs only). The raw `trace.sqlite` is intentionally omitted to keep the repo small.
 
 The generated `report.md` includes:
 
 - A “What to do next” section with trace-backed findings
 - Tables for top kernels, sync-like API calls, idle gaps, and NVTX (if present)
-
-Example (illustrative):
-
-```text
-## Top CUDA kernels (by total time)
-| kernel_name | device_id | total_ms | calls | avg_us | p50_us | p90_us | pct_kernel_time |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| flash_fwd | 0 | 123.456 | 2048 | 60.27 | 58.10 | 75.33 | 42.1 |
-```
 
 ### What the report measures (trace-derived)
 
@@ -85,9 +89,16 @@ Example (illustrative):
 - **NVTX-attributed GPU kernel time (best-effort)**: if `correlationId` + `globalTid` are present, attributes GPU kernel time to enclosing NVTX ranges via NVTX→runtime→kernel correlation; can be disabled with `--no-nvtx-kernel-map`.
 - **Multi-process (PID) breakdown (best-effort)**: top PIDs by kernel time, per-PID top kernels, and per-PID sync-like calls when PID columns are available in the export.
 
+### What it does not do
+
+- It does **not** claim benchmark performance or “X% speedups”. It reports what the trace shows.
+- It does **not** attempt a perfect GPU utilization model across overlapping streams; “idle/busy” is a conservative estimate from kernel intervals.
+- It does **not** guarantee NVTX phase attribution is complete; kernel-time attribution is best-effort and includes coverage reporting.
+
 ### Limitations / schema differences
 
 - Nsight Systems tables are created lazily; not all tables are present in every export. The tool probes schema at runtime and degrades gracefully.
+- Timestamps are interpreted as **nanoseconds** (Nsight Systems CUPTI exports) and converted to ms/us. If an export uses a different unit scale, time-derived values will be wrong; the report warns when it cannot run a sanity check.
 - Idle/busy is **kernel-interval based** (does not include non-kernel GPU work unless you extend it to include memcpy/memset workloads).
 - NVTX phase attribution depends on NVTX being present, and on Nsight exporting `correlationId`/`globalTid` needed to correlate kernels back to NVTX ranges. Coverage may be partial.
 - Per-PID sections depend on PID-bearing columns (`globalPid` / `globalTid` / `pid` / `processId`). The report will emit a warning if PID attribution looks ambiguous.
