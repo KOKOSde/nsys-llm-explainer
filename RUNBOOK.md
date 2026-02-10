@@ -45,4 +45,32 @@ The job writes:
 
 - If your workload is too long, lower the iteration count in the script.
 - For better phase attribution, add NVTX ranges in your inference code around prefill/decode/sampling.
+- The “GPU idle” metric in the report is computed over the **observed kernel time window**. If your capture includes model load, a long warmup, or a long idle tail, idle% can look extreme. Prefer capturing a short steady-state window.
+- If your Nsight Systems version supports capture-range options, consider restricting capture to an NVTX range (see `nsys profile --help` for your version).
+
+### PR writeup template (copy/paste)
+
+Use this as a starting point for a reviewer-friendly PR description:
+
+```text
+## Summary
+<1–3 sentences: what changed and what the tool does>
+
+## Why
+<motivation / user pain: why this is needed>
+
+## Minimal repro
+nsys profile --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none --cuda-graph-trace=node -o trace python your_workload.py
+nsys export --type sqlite --output trace.sqlite --force-overwrite=true --lazy=false trace.nsys-rep
+nsys-llm-explain trace.sqlite --out artifacts/run_YYYYMMDD_HHMMSS/
+
+## Docs changes
+- <what changed in README/RUNBOOK/examples>
+
+## Risk / limitations
+- <schema differences, timestamp assumptions, NVTX coverage, PID decoding>
+
+## Test plan
+python -m unittest discover -s tests -p "test*.py" -q
+```
 

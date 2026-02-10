@@ -15,6 +15,15 @@ Python 3.12.12
 vllm_version:
 0.15.2rc1.dev110+g785cf28ff.d20260209
 
+pytorch:
+Not recorded in this capture (this example stores outputs only).
+
+cuda_driver_and_runtime:
+Not recorded in this capture (only `nvidia-smi -L` was captured at the time).
+
+capture_window_note:
+This capture includes a long gap with no kernels inside the observed kernel window; see `examples/a100_vllm/report.md` for interpretation guidance.
+
 command_nsys_profile:
 nsys profile --trace=cuda\,nvtx\,osrt --cuda-graph-trace=node --sample=none --cpuctxsw=none --force-overwrite=true -o artifacts/example_a100_vllm_20260210T081135Z/trace /scratch/fkalghan/circuit_discovery_and_supression/graphs_ai_psych/artifacts/20260209T004558Z_job46822425_a100_base/venv/bin/python artifacts/example_a100_vllm_20260210T081135Z/workload_vllm.py
 
