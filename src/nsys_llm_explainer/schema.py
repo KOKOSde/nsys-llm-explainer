@@ -170,10 +170,3 @@ def decode_global_tid(global_tid: Optional[int]) -> Tuple[Optional[int], Optiona
     pid = (g // 0x1000000) % 0x1000000
     return (pid, tid)
 
-
-def decode_global_pid(global_pid: Optional[int]) -> Optional[int]:
-    """Decode Nsight Systems serialized globalPid into pid."""
-    if global_pid is None:
-        return None
-    return (int(global_pid) // 0x1000000) % 0x1000000
-
