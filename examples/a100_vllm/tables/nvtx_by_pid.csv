@@ -1,0 +1,4 @@
+pid,range_name,nvtx_count,nvtx_total_time_ms,attributed_kernel_time_ms,attributed_kernel_count,pid_attribution_coverage_pct
+495200,cub::DeviceSegmentedRadixSort,2,0.146888,10.700448,12,2.245465006365207
+495200,ncclGroupStart,14,19.844443,0.0,0,
+495200,ncclGroupEnd,14,0.005811,0.0,0,

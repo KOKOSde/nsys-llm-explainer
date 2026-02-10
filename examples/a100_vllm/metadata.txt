@@ -1,0 +1,22 @@
+run_id=example_a100_vllm_20260210T081135Z
+date_utc=2026-02-10T08:18:35Z
+model=/scratch/fkalghan/circuit_discovery_and_supression/graphs_ai_psych/artifacts/20260206T143100Z_job46703356_a100_profile/model
+dtype=float16
+
+nsys_version:
+NVIDIA Nsight Systems version 2023.4.4.54-234433681190v0
+
+nvidia_smi:
+GPU 0: NVIDIA A100-SXM4-80GB (UUID: GPU-cb28e551-707c-cb12-36c1-7526d384d885)
+
+python:
+Python 3.12.12
+
+vllm_version:
+0.15.2rc1.dev110+g785cf28ff.d20260209
+
+command_nsys_profile:
+nsys profile --trace=cuda\,nvtx\,osrt --cuda-graph-trace=node --sample=none --cpuctxsw=none --force-overwrite=true -o artifacts/example_a100_vllm_20260210T081135Z/trace /scratch/fkalghan/circuit_discovery_and_supression/graphs_ai_psych/artifacts/20260209T004558Z_job46822425_a100_base/venv/bin/python artifacts/example_a100_vllm_20260210T081135Z/workload_vllm.py
+
+command_nsys_export:
+nsys export --type sqlite --output artifacts/example_a100_vllm_20260210T081135Z/trace.sqlite artifacts/example_a100_vllm_20260210T081135Z/trace.nsys-rep
