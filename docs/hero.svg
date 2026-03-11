@@ -51,7 +51,7 @@
   <rect class="bg" width="1200" height="400" />
 
   <text class="title" x="40" y="50">nsys-llm-explainer</text>
-  <text class="subtitle" x="40" y="80">Turn raw SQLite traces into actionable bottlenecks, launch storms, and hotspot analysis.</text>
+  <text class="subtitle" x="40" y="80">Turn raw SQLite traces into actionable kernels, NCCL/NVLink signals, barriers, and per-process hotspots.</text>
 
   <g transform="translate(40, 130)">
     <rect class="box-gpu" width="260" height="220" />
@@ -100,8 +100,8 @@
     <text class="cmd-text" x="30" y="105">$ nsys-llm-explain</text>
     
     <text class="desc-text" x="20" y="150" style="fill:#c7d2fe">Schema Probing</text>
-    <text class="desc-text" x="20" y="170" style="fill:#c7d2fe">NVTX Coverage calculation</text>
-    <text class="desc-text" x="20" y="190" style="fill:#c7d2fe">Heuristic Fallbacks</text>
+    <text class="desc-text" x="20" y="170" style="fill:#c7d2fe">NCCL + NVLink correlation</text>
+    <text class="desc-text" x="20" y="190" style="fill:#c7d2fe">Barrier + PID breakdown</text>
     
     <circle cx="230" cy="210" r="4" fill="#6366f1">
       <animate attributeName="opacity" values="0.2;1;0.2" dur="2s" repeatCount="indefinite" />
@@ -117,16 +117,16 @@
     
     <g transform="translate(20, 80)">
         <rect class="pill-highlight" width="190" height="30" />
-        <text class="pill-text-h" x="15" y="20">Top kernel hotspots</text>
+        <text class="pill-text-h" x="15" y="20">Kernels + NCCL + Barriers</text>
         
         <rect class="pill" y="40" width="190" height="28" />
-        <text class="pill-text" x="15" y="59">report.md (summary)</text>
+        <text class="pill-text" x="15" y="59">report.md (NCCL/NVLink)</text>
         
         <rect class="pill" y="76" width="190" height="28" />
         <text class="pill-text" x="15" y="95">report.json (raw)</text>
         
         <rect class="pill" y="112" width="190" height="28" />
-        <text class="pill-text" x="15" y="131">tables/*.csv</text>
+        <text class="pill-text" x="15" y="131">tables/*.csv (barriers)</text>
     </g>
   </g>
 
