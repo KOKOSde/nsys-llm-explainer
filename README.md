@@ -7,149 +7,263 @@
 
 ### Why this exists
 
-Nsight Systems traces are powerful, but the SQLite export is still hard to interpret when you’re chasing LLM inference bottlenecks.
-This tool turns a `trace.sqlite` into a concise report: top kernels, launch storms, sync indicators, GPU idle gaps, NVTX ranges, and per-PID breakdowns.
-It is designed for **vLLM-style multi-process traces** and is **A100-first** (capture/runbook assumes A100).
-Every number is trace-derived and the report calls out coverage/limitations explicitly.
+Nsight Systems SQLite exports are powerful but tedious to inspect by hand when you need an answer quickly.
 
-### Install (editable)
+This tool turns `trace.sqlite` into a prioritized report with explicit evidence:
+
+- Top CUDA kernels and launch storms
+- Top CPU↔GPU barriers, including blocking memcpy and CPU launcher gaps
+- Top NCCL ops, with overlap against non-NCCL compute kernels
+- Per-process breakdowns for vLLM-style multi-process traces
+- NVLink during NCCL when NVLink counters are present
+- Exact capture instructions when required counters are missing
+
+The repo is intentionally conservative:
+
+- It only claims NCCL/NVLink correlation when the exported SQLite data supports it.
+- If NVLink counters are missing, it prints `NVLink counters not found` and tells you exactly how to re-capture.
+- If only NCCL kernel names are available, it degrades to kernel-name-based NCCL detection instead of pretending it saw higher-level collectives.
+
+### Install
 
 ```bash
-python3.9 -m pip install -e .
+python3 -m pip install -e .
 ```
 
-### Quickstart (minimal commands)
+For tests:
+
+```bash
+python3 -m pip install -e .[dev]
+```
+
+### Run
+
+```bash
+nsys-llm-explain trace.sqlite --out artifacts/run_YYYYMMDD_HHMMSS/
+```
+
+Useful flags:
+
+- `--print-schema`: dump the detected SQLite tables/columns first
+- `--phase-map phases.json`: optional NVTX phase grouping
+
+### What the report includes
+
+The generated output directory contains:
+
+- `report.md`, `report.json`
+- `tables/kernels.csv`
+- `tables/barriers.csv`
+- `tables/nccl_ops.csv`
+- `tables/nccl_by_pid.csv`
+- `tables/nvlink_during_nccl.csv`
+- `tables/gpu_idle_gaps.csv`
+- `tables/kernels_by_pid.csv`, `tables/sync_by_pid.csv`, `tables/nvtx_by_pid.csv`
+
+New report sections:
+
+- `Global critical path suspects`
+- `Top NCCL ops`
+- `NVLink during NCCL`
+- `Top CPU↔GPU barriers`
+- `Per-process breakdown`
+
+### Capture recipes
+
+#### 1. Vanilla CUDA workloads
+
+Use this when you want kernels, launch gaps, barriers, NVTX, and CUDA-graphs-aware capture:
 
 ```bash
 nsys profile \
   --trace=cuda,nvtx,osrt \
   --sample=none \
   --cpuctxsw=none \
+  --cuda-trace-scope=process-tree \
   --cuda-graph-trace=node \
   -o trace \
   python your_workload.py
 
-nsys export --type sqlite --output trace.sqlite --force-overwrite=true --lazy=false trace.nsys-rep
+nsys export \
+  --type sqlite \
+  --output trace.sqlite \
+  --force-overwrite=true \
+  --lazy=false \
+  trace.nsys-rep
+
 nsys-llm-explain trace.sqlite --out artifacts/run_YYYYMMDD_HHMMSS/
 ```
 
 Notes:
 
-- `--cuda-graph-trace=node` matters for workloads that use CUDA graphs.
-- Optional NVTX phase mapping: `--phase-map phases.json` (alias: `--phases-json`).
+- `--cuda-trace-scope=process-tree` keeps child processes in the trace, which matters for vLLM-style worker processes.
+- `--cuda-graph-trace=node` is recommended when the workload uses CUDA Graphs.
 
-### Outputs
+#### 2. NCCL multi-process / multi-node
 
-The output directory contains:
+Use this when you want NCCL ops to survive export cleanly:
 
-- `report.md`, `report.json`
-- `tables/kernels.csv`
-- `tables/gpu_idle_gaps.csv` (if computed)
-- `tables/nvtx_ranges.csv` (if present)
-- `tables/kernels_by_pid.csv`, `tables/sync_by_pid.csv`, `tables/nvtx_by_pid.csv` (best-effort, if PID/NVTX info exists)
+```bash
+nsys profile \
+  --trace=nccl,cuda,nvtx,osrt \
+  --nccl-trace=all \
+  --sample=none \
+  --cpuctxsw=none \
+  --cuda-trace-scope=process-tree \
+  --cuda-graph-trace=node \
+  -o trace \
+  torchrun --nproc_per_node=... your_workload.py
 
-### Example: real A100 vLLM trace
-
-See `examples/a100_vllm/` for a committed, real capture (outputs only). The raw `trace.sqlite` is intentionally omitted to keep the repo small.
-
-Excerpt (from `examples/a100_vllm/report.md`):
-
-```text
-## Warnings
-
-- NVTX-attributed GPU time is best-effort (NVTX→runtime→kernel correlation). Coverage is 2.2% (< 70.0%). Low coverage → interpret cautiously.
-- Per-PID NVTX-attributed GPU time has low coverage for at least one PID (worst PID 495200: 2.2%). Interpret per-phase/per-PID attribution cautiously.
-
-## What to do next
-
-- **[medium] CPU↔GPU synchronization detected (runtime API)**
-  - **Evidence**:
-    - Top sync-like call `cudaEventSynchronize_v3020` total 129.97 ms across 129 calls.
-    - All sync-like calls total 233.63 ms.
-- **[high] Significant GPU idle gaps**
-  - **Evidence**:
-    - GPU 0 idle 99.4% of observed window (82727.3 ms / 83203.8 ms).
-
-## Global: top CUDA kernels (by total time)
-| kernel_name | device_id | total_ms | calls | avg_us | p50_us | p90_us | pct_kernel_time |
-| ampere_fp16_s16816gemm_fp16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn | 0 | 47.015 | 3612 | 13.02 | 12.29 | 16.86 | 9.9 |
+nsys export \
+  --type sqlite \
+  --include-json true \
+  --output trace.sqlite \
+  --force-overwrite=true \
+  --lazy=false \
+  trace.nsys-rep
 ```
 
-### Tested on (real example capture)
+Why `--include-json true` matters:
 
-From `examples/a100_vllm/metadata.txt`:
+- Nsight Systems exports some event classes, including NVTX events with user-defined payloads, only when JSON export is included.
+- Recent NCCL tracing support in Nsight Systems surfaces NCCL activity as NVTX-backed events in the exported database.
 
-- **GPU**: NVIDIA A100-SXM4-80GB
-- **Nsight Systems**: 2023.4.4.54-234433681190v0
-- **Python**: 3.12.12
-- **vLLM**: 0.15.2rc1.dev110+g785cf28ff.d20260209
-- **OS / driver / CUDA / PyTorch**: not recorded in this capture (outputs-only example)
+This tool will still fall back to runtime API names or NCCL kernel names when those richer NCCL events are absent.
 
-### Steady-state capture guidance (idle% can be misleading)
+#### 3. NVLink counters guidance
 
-“GPU idle” is computed over the **observed kernel time window** (first kernel start → last kernel end). If your capture includes model load, long warmup, or a long idle tail, idle% can look extreme.
+The tool can only report `NVLink during NCCL` when the SQLite export contains GPU Metrics tables with NVLink-related metrics.
 
-Recommended practice:
+First, list the supported GPU metric sets on your machine:
 
-- Warm up first, then start the capture.
-- Capture a short steady-state window (seconds).
-- If your Nsight Systems version supports capture-range options, consider restricting capture to an NVTX range (see `nsys profile --help`).
+```bash
+nsys profile --gpu-metrics-devices=all --gpu-metrics-set=help
+```
 
-### What the report measures (trace-derived)
+Then re-capture with a supported metric set:
 
-- **Top CUDA kernels**: from `CUPTI_ACTIVITY_KIND_KERNEL` (GPU kernel intervals), names resolved via `StringIds`.
-- **Launch storm**: kernel launches/sec + duration percentiles derived from kernel intervals.
-- **CPU↔GPU sync indicators**: runtime/driver API call durations from `CUPTI_ACTIVITY_KIND_RUNTIME` filtered to sync-like calls (e.g., `cudaDeviceSynchronize`, `cudaStreamSynchronize`, waits).
-- **GPU idle gaps (estimate)**: per-device union of kernel intervals to estimate busy vs idle within the kernel time window.
-- **NVTX breakdown**: `NVTX_EVENTS` rows with `end` timestamps summarized by range name; optional mapping of range names into phases via `--phase-map`.
-- **NVTX-attributed GPU kernel time (best-effort)**: if `correlationId` + `globalTid` are present, attributes GPU kernel time to enclosing NVTX ranges via NVTX→runtime→kernel correlation; can be disabled with `--no-nvtx-kernel-map`.
-- **Multi-process (PID) breakdown (best-effort)**: top PIDs by kernel time, per-PID top kernels, and per-PID sync-like calls when PID columns are available in the export.
+```bash
+sudo nsys profile \
+  --trace=nccl,cuda,nvtx,osrt \
+  --nccl-trace=all \
+  --sample=none \
+  --cpuctxsw=none \
+  --cuda-trace-scope=process-tree \
+  --cuda-graph-trace=node \
+  --gpu-metrics-devices=all \
+  --gpu-metrics-set=<supported-set> \
+  --gpu-metrics-frequency=10000 \
+  -o trace \
+  torchrun --nproc_per_node=... your_workload.py
 
-### Design principles / non-goals
+nsys export \
+  --type sqlite \
+  --include-json true \
+  --output trace.sqlite \
+  --force-overwrite=true \
+  --lazy=false \
+  trace.nsys-rep
+```
 
-- Offline-only, trace-derived metrics only.
-- Reports coverage/limitations instead of implying certainty.
-- No benchmark claims or speedup promises.
+Notes:
 
-### What good looks like (heuristics)
+- On Linux, GPU Metrics collection typically requires elevated permissions.
+- When those counters are missing, the report prints `NVLink counters not found` instead of inventing a correlation result.
 
-- **Kernel launch storm**: classified using thresholds in `src/nsys_llm_explainer/heuristics.py` (high launches/sec + tiny median kernel).
-- **Dominant kernel**:
-  - If the top kernel is **≥ 50%** of total kernel time, that is usually the first place to focus (single hotspot dominates).
-- **Sync calls**:
-  - Frequent `cudaDeviceSynchronize` / `cudaStreamSynchronize` / `cudaEventSynchronize` can indicate CPU↔GPU barriers that reduce overlap.
-- **CPU-bound signatures**:
-  - Large GPU idle gaps + many short kernels can be consistent with CPU scheduling/launch overhead or unnecessary synchronization.
-- **NVTX phase interpretation**:
-  - NVTX wall-time is host timing. NVTX-attributed GPU kernel time (if present) is best-effort correlation and must be interpreted with its reported coverage.
+### Sample output
+
+The snippets below are generated from the synthetic SQLite fixture used in tests, not from a real GPU capture.
+
+CLI sample:
+
+```text
+Wrote report to: /tmp/.../out/report.md
+Top kernel: computeKernel (42.6% of kernel time, 2.6 ms, 3 calls)
+Top barrier: cudaStreamSynchronize [sync_api] (0.8 ms, 1 events)
+Top NCCL op: allreduce (2.0 ms total, 2.0 ms max, overlap 50.0%)
+Launch storm: 5 launches over 0.005s = 909.1 launches/s; median kernel 1000.00 us
+GPU idle estimate: GPU 0: 18.2% idle (1.0 ms / 5.5 ms window)
+NVLink during NCCL: NVLink counters not found
+```
+
+Report sample:
+
+```text
+## Global critical path suspects
+| kind | name | total_ms | count | details |
+| kernel | computeKernel | 2.600 | 3 | 42.6% of kernel time |
+| nccl | allreduce | 2.000 | 1 | max 2.000 ms |
+
+## Top NCCL ops
+| op_name | source | total_time_ms | max_duration_ms | count | compute_overlap_ms | compute_overlap_pct | straggler |
+| allreduce | kernel | 2.000 | 2.000 | 1 | 1.000 | 50.0 | pid:111 |
+| broadcast | kernel | 1.500 | 1.500 | 1 | 0.600 | 40.0 | pid:222 |
+
+## Top CPU↔GPU barriers
+| barrier_kind | api_name | total_time_ms | count | avg_duration_us | max_duration_us |
+| sync_api | cudaStreamSynchronize | 0.800 | 1 | 800.00 | 800.00 |
+| sync_api | cudaDeviceSynchronize | 0.700 | 1 | 700.00 | 700.00 |
+| blocking_memcpy | cudaMemcpy | 0.600 | 1 | 600.00 | 600.00 |
+| cpu_launcher_gap | cpu_launcher_gap | 0.200 | 1 | 200.00 | 200.00 |
+```
+
+When NVLink metrics are present, the synthetic fixture produces a row like:
+
+```text
+metric_source_id: 0
+metric_names: NVLink bytes received, NVLink bytes transmitted
+avg_metric_during_nccl: 76.67
+avg_metric_outside_nccl: 5.83
+nccl_activity_correlation: 0.990
+```
+
+### Real example
+
+`examples/a100_vllm/` still contains a committed real output-only example from an A100 vLLM run.
+
+That example predates the new NCCL/NVLink capture guidance, so the newly added NCCL/NVLink sections are easiest to verify with a fresh capture or with the synthetic fixture-backed tests.
 
 ### Schema compatibility
 
-- **Tested export**: the committed example was captured/exported in the ASU environment; see `examples/a100_vllm/metadata.txt` for the recorded `nsys --version` output.
-- **Graceful degradation**: the tool probes the SQLite schema at runtime and only emits sections it can compute from available tables/columns.
+Nsight Systems SQLite schema varies by version and by capture options.
 
-Key probes and fallbacks:
+This tool probes the schema at runtime and degrades gracefully:
 
-- **String table**: prefers `StringIds(id,value)`, falls back to any `id`+`value` table.
-- **Kernel activity**: prefers `CUPTI_ACTIVITY_KIND_KERNEL`, falls back to `CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL`.
-- **Runtime API**: prefers `CUPTI_ACTIVITY_KIND_RUNTIME`.
-- **NVTX**: prefers `NVTX_EVENTS`.
+- String table: prefers `StringIds(id, value)`
+- Kernels: prefers `CUPTI_ACTIVITY_KIND_KERNEL`, falls back to concurrent-kernel variants
+- Runtime API: prefers `CUPTI_ACTIVITY_KIND_RUNTIME`
+- NVTX: prefers `NVTX_EVENTS`
+- GPU Metrics: looks for `GPU_METRICS` and `TARGET_INFO_GPU_METRICS`
+- CUDA Graphs capture awareness: the README and report assume `--cuda-graph-trace=node` for graph-heavy workloads
 
-### Limitations / schema differences
+If a section cannot be computed, the report says so explicitly instead of silently omitting the limitation.
 
-- Nsight Systems tables are created lazily; not all tables are present in every export. The tool probes schema at runtime and degrades gracefully.
-- Timestamps are interpreted as **nanoseconds** (Nsight Systems CUPTI exports) and converted to ms/us. If an export uses a different unit scale, time-derived values will be wrong; the report warns when it cannot run a sanity check.
-- Idle/busy is **kernel-interval based** (does not include non-kernel GPU work unless you extend it to include memcpy/memset workloads).
-- NVTX phase attribution depends on NVTX being present, and on Nsight exporting `correlationId`/`globalTid` needed to correlate kernels back to NVTX ranges. Coverage may be partial.
-- Per-PID sections depend on PID-bearing columns (`globalPid` / `globalTid` / `pid` / `processId`). The report will emit a warning if PID attribution looks ambiguous.
+### Reproduce locally
+
+Install:
+
+```bash
+python3 -m pip install -e .[dev]
+```
+
+Run on a trace:
+
+```bash
+nsys-llm-explain trace.sqlite --out artifacts/run_YYYYMMDD_HHMMSS/
+```
+
+Run tests:
+
+```bash
+python3 -m pytest -q
+```
 
 ### References
 
-- Nsight Systems SQLite exporter schema reference: `https://docs.nvidia.com/nsight-systems/` (see `nsys-exporter` docs for your version).
+Primary NVIDIA documentation used for the capture/export guidance:
 
-### Roadmap (near-term)
-
-- Add a small “known-good schema” matrix per Nsight Systems version (tables/columns observed).
-- Add optional inclusion of memcpy/memset activity into the “busy/idle” estimate.
-- Add guidance for common inference stacks (vLLM, torch.compile, CUDA graphs) in the runbook.
-
+- Nsight Systems User Guide: GPU metrics collection, `--gpu-metrics-set=help`, and required permissions
+- Nsight Systems User Guide: `--cuda-graph-trace=node`
+- Nsight Systems User Guide: `--cuda-trace-scope=process-tree`
+- Nsight Systems User Guide: NCCL tracing and `--nccl-trace=all`
+- Nsight Systems User Guide: SQLite export `--include-json true`

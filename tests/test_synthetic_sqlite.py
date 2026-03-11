@@ -1,13 +1,19 @@
+import contextlib
+import io
 import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
+from nsys_llm_explainer.cli import main as cli_main
 from nsys_llm_explainer.queries import (
     TraceDB,
+    correlate_nvlink_with_nccl,
     detect_launch_storm,
+    detect_nccl_ops,
     estimate_gpu_idle_gaps,
+    find_cpu_gpu_barriers,
     find_sync_events,
     get_top_kernels,
     kernels_by_pid,
@@ -21,6 +27,108 @@ def _mk_global_tid(pid: int, tid: int) -> int:
 
 def _mk_global_pid(pid: int) -> int:
     return int(pid) * 0x1000000
+
+
+def _build_trace_with_nccl_and_barriers(db_path: Path, *, include_gpu_metrics: bool) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE StringIds(id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL(
+                start INT NOT NULL,
+                end INT NOT NULL,
+                deviceId INT NOT NULL,
+                contextId INT NOT NULL,
+                streamId INT NOT NULL,
+                globalPid INT,
+                demangledName INT NOT NULL
+            );
+            CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME(
+                start INT NOT NULL,
+                end INT NOT NULL,
+                nameId INT NOT NULL,
+                globalTid INT
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO StringIds(id, value) VALUES(?, ?)",
+            [
+                (1, "computeKernel"),
+                (2, "ncclAllReduceRingKernel"),
+                (3, "ncclBroadcastRingKernel"),
+                (10, "cudaLaunchKernel"),
+                (11, "cudaMemcpy"),
+                (12, "cudaStreamSynchronize"),
+                (13, "cudaDeviceSynchronize"),
+            ],
+        )
+        pid1 = 111
+        pid2 = 222
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL(start,end,deviceId,contextId,streamId,globalPid,demangledName) VALUES(?,?,?,?,?,?,?)",
+            [
+                (0, 1_000_000, 0, 0, 0, _mk_global_pid(pid1), 1),
+                (1_000_000, 3_000_000, 0, 0, 0, _mk_global_pid(pid1), 2),
+                (1_500_000, 2_500_000, 0, 0, 0, _mk_global_pid(pid1), 1),
+                (4_000_000, 5_500_000, 0, 0, 0, _mk_global_pid(pid2), 3),
+                (4_200_000, 4_800_000, 0, 0, 0, _mk_global_pid(pid2), 1),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME(start,end,nameId,globalTid) VALUES(?,?,?,?)",
+            [
+                (0, 10_000, 10, _mk_global_tid(pid1, 7)),
+                (210_000, 220_000, 10, _mk_global_tid(pid1, 7)),
+                (3_200_000, 3_800_000, 11, _mk_global_tid(pid1, 7)),
+                (5_000_000, 5_800_000, 12, _mk_global_tid(pid1, 7)),
+                (2_000_000, 2_700_000, 13, _mk_global_tid(pid2, 9)),
+            ],
+        )
+        if include_gpu_metrics:
+            conn.executescript(
+                """
+                CREATE TABLE TARGET_INFO_GPU_METRICS(
+                    metricId INT NOT NULL,
+                    metricName TEXT NOT NULL,
+                    typeId INT
+                );
+                CREATE TABLE GPU_METRICS(
+                    timestamp INT NOT NULL,
+                    metricId INT NOT NULL,
+                    typeId INT,
+                    value REAL NOT NULL
+                );
+                """
+            )
+            conn.executemany(
+                "INSERT INTO TARGET_INFO_GPU_METRICS(metricId, metricName, typeId) VALUES(?, ?, ?)",
+                [
+                    (1, "NVLink bytes transmitted", 0),
+                    (2, "NVLink bytes received", 0),
+                ],
+            )
+            conn.executemany(
+                "INSERT INTO GPU_METRICS(timestamp, metricId, typeId, value) VALUES(?, ?, ?, ?)",
+                [
+                    (500_000, 1, 0, 5.0),
+                    (500_000, 2, 0, 4.0),
+                    (1_500_000, 1, 0, 70.0),
+                    (1_500_000, 2, 0, 65.0),
+                    (2_500_000, 1, 0, 80.0),
+                    (2_500_000, 2, 0, 78.0),
+                    (3_500_000, 1, 0, 6.0),
+                    (3_500_000, 2, 0, 5.0),
+                    (4_500_000, 1, 0, 85.0),
+                    (4_500_000, 2, 0, 82.0),
+                    (6_000_000, 1, 0, 8.0),
+                    (6_000_000, 2, 0, 7.0),
+                ],
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestSyntheticSQLiteFixtures(unittest.TestCase):
@@ -431,6 +539,56 @@ class TestSyntheticSQLiteFixtures(unittest.TestCase):
                 self.assertTrue(bool((pid0.get("launch_storm") or {}).get("is_launch_storm")))
             finally:
                 db.close()
+
+    def test_nccl_barriers_and_nvlink_correlation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "trace.sqlite"
+            _build_trace_with_nccl_and_barriers(db_path, include_gpu_metrics=True)
+
+            db = TraceDB.open(db_path)
+            try:
+                nccl = detect_nccl_ops(db)
+                self.assertTrue(nccl["present"])
+                self.assertTrue(nccl["ops"])
+                self.assertEqual(str(nccl["ops"][0]["op_name"]), "allreduce")
+
+                barriers = find_cpu_gpu_barriers(db)
+                api_names = [str(row["api_name"]) for row in barriers["barriers"]]
+                self.assertIn("cudaMemcpy", api_names)
+                self.assertIn("cudaStreamSynchronize", api_names)
+                self.assertTrue(any(str(row["api_name"]) == "cpu_launcher_gap" for row in barriers["barriers"]))
+
+                nvlink = correlate_nvlink_with_nccl(db, nccl)
+                self.assertTrue(nvlink["present"])
+                self.assertTrue(nvlink["rows"])
+                row = nvlink["rows"][0]
+                self.assertGreater(float(row["avg_metric_during_nccl"]), float(row["avg_metric_outside_nccl"]))
+                self.assertGreaterEqual(float(row["nccl_activity_correlation"]), 0.0)
+            finally:
+                db.close()
+
+    def test_cli_runs_and_reports_missing_nvlink_counters(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            db_path = td_path / "trace.sqlite"
+            out_dir = td_path / "out"
+            _build_trace_with_nccl_and_barriers(db_path, include_gpu_metrics=False)
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = cli_main([str(db_path), "--out", str(out_dir)])
+
+            self.assertEqual(rc, 0)
+            text = stdout.getvalue()
+            self.assertIn("Top NCCL op:", text)
+            self.assertIn("NVLink during NCCL: NVLink counters not found", text)
+
+            report_md = (out_dir / "report.md").read_text(encoding="utf-8")
+            self.assertIn("## Top NCCL ops", report_md)
+            self.assertIn("## NVLink during NCCL", report_md)
+            self.assertIn("NVLink counters not found", report_md)
+            self.assertIn("## Top CPU↔GPU barriers", report_md)
+            self.assertIn("## Per-process breakdown", report_md)
 
 
 if __name__ == "__main__":

@@ -120,6 +120,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         launch = m["launch_storm"]
         idle = m["gpu_idle"].get("devices") or []
         worst = max(idle, key=lambda d: float(d.get("idle_pct_of_window") or 0.0)) if idle else None
+        barriers = m.get("barriers", {}).get("barriers") or []
+        top_barrier = barriers[0] if barriers else None
+        nccl_ops = m.get("nccl", {}).get("ops") or []
+        top_nccl = nccl_ops[0] if nccl_ops else None
+        nvlink = m.get("nvlink_during_nccl") or {}
 
         print("Wrote report to:", out_dir / "report.md")
         if top:
@@ -132,6 +137,30 @@ def main(argv: Optional[List[str]] = None) -> int:
                     int(top.get("call_count") or 0),
                 ),
             )
+        if top_barrier:
+            print(
+                "Top barrier:",
+                "{} [{}] ({:.1f} ms, {} events)".format(
+                    top_barrier.get("api_name"),
+                    top_barrier.get("barrier_kind"),
+                    float(top_barrier.get("total_time_ms") or 0.0),
+                    int(top_barrier.get("count") or 0),
+                ),
+            )
+        if top_nccl:
+            print(
+                "Top NCCL op:",
+                "{} ({:.1f} ms total, {:.1f} ms max, overlap {:.1f}%)".format(
+                    top_nccl.get("op_name"),
+                    float(top_nccl.get("total_time_ms") or 0.0),
+                    float(top_nccl.get("max_duration_ms") or 0.0),
+                    float(top_nccl.get("compute_overlap_pct") or 0.0),
+                ),
+            )
+        elif m.get("nccl", {}).get("present"):
+            print("Top NCCL op: detected, but no ranked rows were produced")
+        else:
+            print("Top NCCL op: none detected")
         print(
             "Launch storm:",
             "{} launches over {:.3f}s = {:.1f} launches/s; median kernel {:.2f} us".format(
@@ -151,6 +180,19 @@ def main(argv: Optional[List[str]] = None) -> int:
                     float(worst.get("window_ms") or 0.0),
                 ),
             )
+        if nvlink.get("present") and (nvlink.get("rows") or []):
+            row = (nvlink.get("rows") or [])[0]
+            print(
+                "NVLink during NCCL:",
+                "{} (during {:.2f}, outside {:.2f}, corr {:.3f})".format(
+                    row.get("metric_names"),
+                    float(row.get("avg_metric_during_nccl") or 0.0),
+                    float(row.get("avg_metric_outside_nccl") or 0.0),
+                    float(row.get("nccl_activity_correlation") or 0.0),
+                ),
+            )
+        elif nvlink.get("missing_counters"):
+            print("NVLink during NCCL: NVLink counters not found")
         return 0
     finally:
         db.close()
@@ -158,4 +200,3 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

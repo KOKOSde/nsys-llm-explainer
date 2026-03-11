@@ -13,8 +13,11 @@ from .heuristics import (
 )
 from .queries import (
     TraceDB,
+    correlate_nvlink_with_nccl,
     detect_launch_storm,
+    detect_nccl_ops,
     estimate_gpu_idle_gaps,
+    find_cpu_gpu_barriers,
     find_sync_events,
     get_top_kernels,
     kernels_by_pid,
@@ -89,8 +92,11 @@ def analyze(
     top_kernels = get_top_kernels(trace_db, limit=int(kernel_limit), compute_percentiles=bool(compute_kernel_percentiles))
     launch_storm = detect_launch_storm(top_kernels, trace_db=trace_db)
     sync = find_sync_events(trace_db)
+    barriers = find_cpu_gpu_barriers(trace_db)
     gpu_idle = estimate_gpu_idle_gaps(trace_db, top_n_gaps=50)
     nvtx = nvtx_breakdown(trace_db)
+    nccl = detect_nccl_ops(trace_db)
+    nvlink_during_nccl = correlate_nvlink_with_nccl(trace_db, nccl)
 
     if compute_nvtx_kernel_map:
         nvtx_kernel = nvtx_kernel_time_by_range(trace_db, limit=50)
@@ -148,6 +154,8 @@ def analyze(
                     float(nvtx_kernel.get("coverage_pct") or 0.0), float(nvtx_coverage_warn_threshold) * 100.0
                 )
             )
+    if nccl.get("present") and nvlink_during_nccl.get("missing_counters"):
+        warnings.append("NVLink counters not found. The report cannot correlate NCCL windows with NVLink metrics for this export.")
 
     # Per-PID NVTX→kernel coverage warnings (if present).
     try:
@@ -258,7 +266,10 @@ def analyze(
             "top_kernels": top_kernels,
             "launch_storm": launch_storm,
             "sync": sync,
+            "barriers": barriers,
             "gpu_idle": gpu_idle,
+            "nccl": nccl,
+            "nvlink_during_nccl": nvlink_during_nccl,
             "nvtx": nvtx,
             "nvtx_phases": nvtx_phases,
             "nvtx_kernel_time": nvtx_kernel,
@@ -290,6 +301,10 @@ def write_artifacts(outputs: AnalysisOutputs, out_dir: Path) -> None:
 
     m = outputs.report["metrics"]
     write_csv(m["top_kernels"].get("kernels") or [], tables_dir / "kernels.csv")
+    write_csv(m["barriers"].get("barriers") or [], tables_dir / "barriers.csv")
+    write_csv(m["nccl"].get("ops") or [], tables_dir / "nccl_ops.csv")
+    write_csv(m["nccl"].get("pids") or [], tables_dir / "nccl_by_pid.csv")
+    write_csv(m["nvlink_during_nccl"].get("rows") or [], tables_dir / "nvlink_during_nccl.csv")
     write_csv(m["gpu_idle"].get("gaps") or [], tables_dir / "gpu_idle_gaps.csv")
 
     if m.get("nvtx") and (m["nvtx"].get("ranges") or []):
@@ -346,6 +361,113 @@ def render_markdown(report: Mapping[str, Any]) -> str:
                     lines.append("    - {}".format(r))
     lines.append("")
 
+    lines.append("## Global critical path suspects")
+    lines.append("")
+    suspect_rows: List[Dict[str, Any]] = []
+    kernels = m["top_kernels"].get("kernels") or []
+    if kernels:
+        top_kernel = kernels[0]
+        suspect_rows.append(
+            {
+                "kind": "kernel",
+                "name": top_kernel.get("kernel_name"),
+                "total_ms": float(top_kernel.get("total_time_ms") or 0.0),
+                "count": int(top_kernel.get("call_count") or 0),
+                "details": "{:.1f}% of kernel time".format(float(top_kernel.get("pct_total_kernel_time") or 0.0)),
+            }
+        )
+    nccl = m.get("nccl") or {}
+    nccl_ops = nccl.get("ops") or []
+    if nccl_ops:
+        top_nccl = nccl_ops[0]
+        suspect_rows.append(
+            {
+                "kind": "nccl",
+                "name": top_nccl.get("op_name"),
+                "total_ms": float(top_nccl.get("total_time_ms") or 0.0),
+                "count": int(top_nccl.get("count") or 0),
+                "details": "max {:.3f} ms".format(float(top_nccl.get("max_duration_ms") or 0.0)),
+            }
+        )
+    barriers = m.get("barriers") or {}
+    barrier_rows = barriers.get("barriers") or []
+    if barrier_rows:
+        top_barrier = barrier_rows[0]
+        suspect_rows.append(
+            {
+                "kind": "barrier",
+                "name": top_barrier.get("api_name"),
+                "total_ms": float(top_barrier.get("total_time_ms") or 0.0),
+                "count": int(top_barrier.get("count") or 0),
+                "details": str(top_barrier.get("barrier_kind") or ""),
+            }
+        )
+    devices = m["gpu_idle"].get("devices") or []
+    if devices:
+        worst_idle = max(devices, key=lambda item: float(item.get("idle_pct_of_window") or 0.0))
+        suspect_rows.append(
+            {
+                "kind": "gpu_idle",
+                "name": "GPU {}".format(worst_idle.get("device_id")),
+                "total_ms": float(worst_idle.get("idle_ms") or 0.0),
+                "count": 1,
+                "details": "{:.1f}% idle".format(float(worst_idle.get("idle_pct_of_window") or 0.0)),
+            }
+        )
+    suspect_rows.sort(key=lambda item: (-float(item.get("total_ms") or 0.0), str(item.get("kind") or "")))
+    if suspect_rows:
+        lines.append(_md_table(suspect_rows, cols=["kind", "name", "total_ms", "count", "details"]))
+    else:
+        lines.append("_(none)_")
+    lines.append("")
+
+    lines.append("## Top NCCL ops")
+    lines.append("")
+    lines.append("- **Derived from**: best-effort NCCL windows from NVTX ranges, runtime API calls, or NCCL kernel names.")
+    lines.append("- **Limitations**: op names are only as precise as the exported trace data; kernel-only traces may yield raw NCCL kernel names instead of collective labels.")
+    if nccl_ops:
+        lines.append("")
+        lines.append(_md_table(nccl_ops[:20], cols=["op_name", "source", "total_time_ms", "max_duration_ms", "count", "compute_overlap_ms", "compute_overlap_pct", "straggler"]))
+    else:
+        lines.append("")
+        lines.append("_(no NCCL activity detected)_")
+    nccl_notes = nccl.get("notes") or []
+    if nccl_notes:
+        lines.append("")
+        for note in nccl_notes:
+            lines.append("- {}".format(note))
+    lines.append("")
+
+    lines.append("## NVLink during NCCL")
+    lines.append("")
+    lines.append("- **Derived from**: `GPU_METRICS` / `TARGET_INFO_GPU_METRICS` samples aligned with NCCL-active windows.")
+    lines.append("- **Limitations**: GPU Metrics are device-level samples; they are not process-attributed in the SQLite export.")
+    nvlink = m.get("nvlink_during_nccl") or {}
+    if nvlink.get("present") and (nvlink.get("rows") or []):
+        lines.append("")
+        lines.append(
+            _md_table(
+                nvlink.get("rows")[:20],
+                cols=[
+                    "metric_source_id",
+                    "metric_names",
+                    "samples",
+                    "samples_during_nccl",
+                    "avg_metric_during_nccl",
+                    "avg_metric_outside_nccl",
+                    "max_metric_during_nccl",
+                    "nccl_activity_correlation",
+                ],
+            )
+        )
+    else:
+        lines.append("")
+        for note in (nvlink.get("notes") or ["NVLink counters not found."]):
+            lines.append("- {}".format(note))
+        for instruction in (nvlink.get("capture_instructions") or []):
+            lines.append("- {}".format(instruction))
+    lines.append("")
+
     lines.append("## Global: top CUDA kernels (by total time)")
     lines.append("")
     lines.append("- **Derived from**: `{}`; duration = `end-start`.".format(m["top_kernels"].get("table")))
@@ -372,10 +494,41 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     by_pid = m.get("by_pid") or {}
     kb = by_pid.get("kernels") or {}
 
-    lines.append("## Top PIDs by GPU kernel time")
+    lines.append("## Per-process breakdown")
+    lines.append("")
+    lines.append("- **Derived from**: per-PID kernel, NCCL, and barrier aggregations when PID-bearing columns exist.")
+    lines.append("- **Limitations**: PID attribution is best-effort and depends on exported `pid`/`processId`/`globalPid`/`globalTid` columns.")
+    process_rows: List[Dict[str, Any]] = []
+    kernel_pid_rows = kb.get("pids") or []
+    nccl_pid_rows = {int(row["pid"]): row for row in (nccl.get("pids") or []) if row.get("pid") is not None}
+    barrier_pid_rows = {int(row["pid"]): row for row in ((barriers.get("pids") or [])) if row.get("pid") is not None}
+    seen_pids = sorted({int(row["pid"]) for row in kernel_pid_rows if row.get("pid") is not None} | set(nccl_pid_rows.keys()) | set(barrier_pid_rows.keys()))
+    for pid in seen_pids:
+        kernel_row = next((row for row in kernel_pid_rows if int(row.get("pid") or -1) == pid), {})
+        nccl_row = nccl_pid_rows.get(pid, {})
+        barrier_row = barrier_pid_rows.get(pid, {})
+        process_rows.append(
+            {
+                "pid": pid,
+                "kernel_time_ms": float(kernel_row.get("total_kernel_time_ms") or 0.0),
+                "kernel_count": int(kernel_row.get("kernel_count") or 0),
+                "nccl_time_ms": float(nccl_row.get("total_nccl_time_ms") or 0.0),
+                "barrier_time_ms": float(barrier_row.get("total_barrier_time_ms") or 0.0),
+                "top_nccl_op": nccl_row.get("top_nccl_op"),
+                "top_barrier": barrier_row.get("top_barrier"),
+            }
+        )
+    process_rows.sort(key=lambda row: (-float(row.get("kernel_time_ms") or 0.0), -float(row.get("nccl_time_ms") or 0.0), int(row.get("pid") or -1)))
+    lines.append("")
+    if process_rows:
+        lines.append(_md_table(process_rows[:20], cols=["pid", "kernel_time_ms", "kernel_count", "nccl_time_ms", "barrier_time_ms", "top_nccl_op", "top_barrier"]))
+    else:
+        lines.append("_(PID breakdown unavailable for this export.)_")
+    lines.append("")
+
+    lines.append("### Top PIDs by GPU kernel time")
     lines.append("")
     lines.append("- **Derived from**: `{}` grouped by PID (requires kernel PID column such as `globalPid`).".format(schema.get("kernel_table")))
-    lines.append("- **Limitations**: PID attribution is best-effort and depends on exported columns; missing PID columns → section unavailable.")
     lines.append("- **PID source**: `{}`".format(kb.get("pid_source")))
     lines.append("")
     if kb.get("present") and (kb.get("pids") or []):
@@ -384,7 +537,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         lines.append("_(PID breakdown unavailable for kernels on this export.)_")
     lines.append("")
 
-    lines.append("## Top kernels per PID")
+    lines.append("### Top kernels per PID")
     lines.append("")
     if kb.get("present") and (kb.get("kernels") or []):
         grouped: Dict[int, List[Dict[str, Any]]] = {}
@@ -412,6 +565,23 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     else:
         lines.append("_(no per-PID kernel rows)_")
         lines.append("")
+
+    lines.append("## Top CPU↔GPU barriers")
+    lines.append("")
+    lines.append("- **Derived from**: CUDA runtime calls, blocking memcpy APIs, host wait APIs (when `OSRT_API` exists), and synthetic CPU launcher gaps between launch APIs.")
+    lines.append("- **Limitations**: OS runtime waits are only available when the export contains OSRT tables; launcher gaps are host-side gaps between launch calls, not direct GPU counters.")
+    if barrier_rows:
+        lines.append("")
+        lines.append(_md_table(barrier_rows[:30], cols=["barrier_kind", "api_name", "total_time_ms", "count", "avg_duration_us", "max_duration_us"]))
+    else:
+        lines.append("")
+        lines.append("_(no CPU↔GPU barriers detected)_")
+    barrier_notes = barriers.get("notes") or []
+    if barrier_notes:
+        lines.append("")
+        for note in barrier_notes:
+            lines.append("- {}".format(note))
+    lines.append("")
 
     lines.append("## Launch storm per PID (best-effort)")
     lines.append("")
@@ -660,12 +830,24 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         )
     )
     lines.append("- **Kernel durations**: `end-start` from `{}` summed over launches (no overlap correction).".format(schema.get("kernel_table")))
+    lines.append(
+        "- **NCCL windows**: best-effort from NVTX ranges first, then runtime API names, then NCCL kernel names. "
+        "Collective labels may degrade to raw names when only kernels are available."
+    )
+    lines.append(
+        "- **NVLink during NCCL**: computed only when GPU Metrics tables (`GPU_METRICS`, `TARGET_INFO_GPU_METRICS`) include NVLink-related metrics; "
+        "otherwise the report emits capture instructions instead of guessing."
+    )
+    lines.append(
+        "- **CPU launcher gaps**: host-side gaps between consecutive CUDA launch APIs above the configured threshold; this is a barrier heuristic, not a hardware counter."
+    )
     lines.append("- **GPU idle estimate**: per-device union of kernel intervals within the kernel time window; excludes memcpy/memset unless you extend the tool.")
     lines.append(
         "- **NVTX→kernel attribution**: best-effort correlation (`kernel.correlationId` → runtime launch site → `globalTid` → enclosing NVTX range). "
         "Coverage is reported; low coverage means per-phase attribution may not reflect total GPU time."
     )
     lines.append("- **Per-PID attribution**: best-effort decoding from available PID-bearing columns (`pid`, `processId`, `globalPid`, `globalTid`).")
+    lines.append("- **CUDA graphs capture**: if your workload uses CUDA Graphs, capture with `--cuda-graph-trace=node` so graph launches remain visible in the export.")
     lines.append("")
 
     return "\n".join(lines) + "\n"

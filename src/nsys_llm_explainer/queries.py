@@ -4,6 +4,7 @@ import contextlib
 import csv
 import json
 import math
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,6 +53,24 @@ def schema_discovery(trace_db: TraceDB) -> Dict[str, Any]:
     tables: Dict[str, Any] = {}
     for name, info in trace_db.schema.tables.items():
         tables[name] = {"columns": list(info.columns), "types": dict(info.column_types)}
+    gpu_metrics_table = _pick_table_with_required_cols(
+        trace_db,
+        candidates=("GPU_METRICS",),
+        required_cols=("timestamp", "metricId", "value"),
+        name_hint="GPU_METRICS",
+    )
+    target_info_gpu_metrics_table = _pick_table_with_required_cols(
+        trace_db,
+        candidates=("TARGET_INFO_GPU_METRICS",),
+        required_cols=("metricId", "metricName"),
+        name_hint="GPU_METRICS",
+    )
+    cuda_graph_table = _pick_table_with_required_cols(
+        trace_db,
+        candidates=("CUDA_GRAPH_EVENTS",),
+        required_cols=("start",),
+        name_hint="CUDA_GRAPH",
+    )
     kernel_pid_source: Optional[str] = None
     if trace_db.schema.kernel_table:
         kinfo = trace_db.schema.table(trace_db.schema.kernel_table)
@@ -110,6 +129,15 @@ def schema_discovery(trace_db: TraceDB) -> Dict[str, Any]:
             "has_textId": bool(trace_db.schema.nvtx_table and trace_db.schema.table(trace_db.schema.nvtx_table).has("textId")),
             "has_globalTid": bool(trace_db.schema.nvtx_table and trace_db.schema.table(trace_db.schema.nvtx_table).has("globalTid")),
         },
+        "gpu_metrics_table": {
+            "present": bool(gpu_metrics_table),
+            "table": gpu_metrics_table,
+            "target_info_table": target_info_gpu_metrics_table,
+        },
+        "cuda_graph_table": {
+            "present": bool(cuda_graph_table),
+            "table": cuda_graph_table,
+        },
     }
 
     # Timestamp units: Nsight Systems exports `start/end` in nanoseconds for CUDA/CUPTI activity.
@@ -140,6 +168,9 @@ def schema_discovery(trace_db: TraceDB) -> Dict[str, Any]:
         "kernel_table": trace_db.schema.kernel_table,
         "runtime_table": trace_db.schema.runtime_table,
         "nvtx_table": trace_db.schema.nvtx_table,
+        "gpu_metrics_table": gpu_metrics_table,
+        "target_info_gpu_metrics_table": target_info_gpu_metrics_table,
+        "cuda_graph_table": cuda_graph_table,
         "sync_table": trace_db.schema.sync_table,
         "kernel_pid_source": kernel_pid_source,
         "runtime_pid_source": runtime_pid_source,
@@ -166,6 +197,215 @@ def _percentile_from_sorted(values: Sequence[float], q: float) -> Optional[float
         return float(values[lo])
     w = pos - lo
     return float(values[lo]) * (1.0 - w) + float(values[hi]) * w
+
+
+_NCCL_COLLECTIVE_PATTERNS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("allreduce", ("allreduce", "all_reduce", "all reduce")),
+    ("allgather", ("allgather", "all_gather", "all gather")),
+    ("reducescatter", ("reducescatter", "reduce_scatter", "reduce scatter")),
+    ("broadcast", ("broadcast",)),
+)
+
+_NCCL_SIGNAL_PATTERNS: Tuple[str, ...] = (
+    "nccl",
+    "allreduce",
+    "all_reduce",
+    "all reduce",
+    "allgather",
+    "all_gather",
+    "all gather",
+    "reducescatter",
+    "reduce_scatter",
+    "reduce scatter",
+    "broadcast",
+)
+
+_NVLINK_SIGNAL_PATTERNS: Tuple[str, ...] = (
+    "nvlink",
+    "nvlrx__",
+    "nvltx__",
+    "nvlrx",
+    "nvltx",
+)
+
+_SYNC_BARRIER_PATTERNS: Tuple[str, ...] = (
+    "cudaDeviceSynchronize",
+    "cudaStreamSynchronize",
+    "cudaEventSynchronize",
+    "cudaStreamWaitEvent",
+    "cudaEventQuery",
+    "cuCtxSynchronize",
+    "cuStreamSynchronize",
+    "cuEventSynchronize",
+    "cuStreamWaitEvent",
+)
+
+_BLOCKING_COPY_PATTERNS: Tuple[str, ...] = (
+    "cudaMemcpy",
+    "cudaMemcpy2D",
+    "cudaMemcpy3D",
+    "cudaMemcpyPeer",
+    "cuMemcpy",
+)
+
+_HOST_WAIT_PATTERNS: Tuple[str, ...] = (
+    "poll",
+    "ppoll",
+    "epoll_wait",
+    "select",
+    "pselect",
+    "futex",
+    "pthread_cond_wait",
+    "pthread_cond_timedwait",
+    "sem_wait",
+    "nanosleep",
+    "clock_nanosleep",
+)
+
+_LAUNCH_API_PATTERNS: Tuple[str, ...] = (
+    "cudaLaunch",
+    "cudaLaunchKernel",
+    "cudaLaunchKernelEx",
+    "cudaGraphLaunch",
+    "cuLaunchKernel",
+    "cuGraphLaunch",
+)
+
+
+def _lower_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _name_matches_patterns(name: Any, patterns: Sequence[str]) -> bool:
+    text = _lower_text(name)
+    return any(pattern.lower() in text for pattern in patterns)
+
+
+def _classify_nccl_collective(*texts: Any) -> Optional[str]:
+    joined = " ".join(_lower_text(text) for text in texts if text)
+    for label, patterns in _NCCL_COLLECTIVE_PATTERNS:
+        if any(pattern in joined for pattern in patterns):
+            return label
+    return None
+
+
+def _looks_like_nccl(*texts: Any) -> bool:
+    joined = " ".join(_lower_text(text) for text in texts if text)
+    if not joined:
+        return False
+    if "nccl" in joined:
+        return True
+    collective = _classify_nccl_collective(joined)
+    return collective is not None
+
+
+def _extract_rank_label(*texts: Any) -> Optional[str]:
+    joined = " ".join(str(text or "") for text in texts if text)
+    if not joined:
+        return None
+    patterns = (
+        r'"rank"\s*:\s*(\d+)',
+        r"\brank\s*[:=]\s*(\d+)\b",
+        r"\blocal_rank\s*[:=]\s*(\d+)\b",
+        r"\bglobal_rank\s*[:=]\s*(\d+)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, joined, flags=re.IGNORECASE)
+        if match:
+            return "rank:{}".format(int(match.group(1)))
+    return None
+
+
+def _interval_overlap_ns(intervals: Sequence[Tuple[int, int]], start_ns: int, end_ns: int) -> int:
+    overlap = 0
+    for iv_start, iv_end in intervals:
+        if iv_end <= start_ns:
+            continue
+        if iv_start >= end_ns:
+            break
+        overlap += max(0, min(end_ns, iv_end) - max(start_ns, iv_start))
+    return overlap
+
+
+def _metric_capture_instructions(include_nccl: bool = False) -> List[str]:
+    trace_switches = "cuda,nvtx,osrt"
+    if include_nccl:
+        trace_switches = "nccl,cuda,nvtx,osrt"
+    return [
+        "NVLink counters not found in the SQLite export.",
+        "List supported metric sets first: `nsys profile --gpu-metrics-devices=all --gpu-metrics-set=help`.",
+        (
+            "Then re-capture with GPU Metrics enabled, for example: "
+            "`sudo nsys profile --trace={trace} --cuda-trace-scope=process-tree "
+            "--gpu-metrics-devices=all --gpu-metrics-set=<supported-set> "
+            "--gpu-metrics-frequency=10000 --cuda-graph-trace=node -o trace <app>`."
+        ).format(trace=trace_switches),
+        "Export again with SQLite output: `nsys export --type sqlite --output trace.sqlite --force-overwrite=true --lazy=false trace.nsys-rep`.",
+    ]
+
+
+def _resolve_name_expr(
+    trace_db: TraceDB,
+    *,
+    table: str,
+    alias: str,
+    info: Any,
+    text_col: str,
+    text_id_col: str,
+    string_alias: str,
+) -> Tuple[str, str]:
+    stable = trace_db.schema.string_table
+    join = ""
+    if info.has(text_col):
+        expr = "{alias}.{col}".format(alias=alias, col=text_col)
+        if info.has(text_id_col) and stable and not trace_db.schema.is_text_column(table, text_id_col):
+            join = " LEFT JOIN {stable} {s_alias} ON {s_alias}.id = {alias}.{id_col} ".format(
+                stable=stable, s_alias=string_alias, alias=alias, id_col=text_id_col
+            )
+            expr = "COALESCE({alias}.{col}, {s_alias}.value)".format(alias=alias, col=text_col, s_alias=string_alias)
+        return (expr, join)
+    if info.has(text_id_col):
+        if stable and not trace_db.schema.is_text_column(table, text_id_col):
+            join = " LEFT JOIN {stable} {s_alias} ON {s_alias}.id = {alias}.{id_col} ".format(
+                stable=stable, s_alias=string_alias, alias=alias, id_col=text_id_col
+            )
+            return ("{s_alias}.value".format(s_alias=string_alias), join)
+        return ("{alias}.{id_col}".format(alias=alias, id_col=text_id_col), join)
+    return ("''", join)
+
+
+def _pick_table_with_required_cols(
+    trace_db: TraceDB,
+    *,
+    candidates: Sequence[str],
+    required_cols: Sequence[str],
+    name_hint: Optional[str] = None,
+) -> Optional[str]:
+    tables = trace_db.schema.tables
+    for candidate in candidates:
+        info = tables.get(candidate)
+        if info and all(info.has(col) for col in required_cols):
+            return candidate
+    for name, info in tables.items():
+        if name_hint and name_hint.lower() not in name.lower():
+            continue
+        if all(info.has(col) for col in required_cols):
+            return name
+    return None
+
+
+def _classify_barrier_kind(name: str, *, source: str) -> Optional[str]:
+    lowered = _lower_text(name)
+    if source == "runtime":
+        if any(pattern.lower() in lowered for pattern in _BLOCKING_COPY_PATTERNS) and "async" not in lowered:
+            return "blocking_memcpy"
+        if any(pattern.lower() in lowered for pattern in _SYNC_BARRIER_PATTERNS) or "synchronize" in lowered or "wait" in lowered:
+            return "sync_api"
+        return None
+    if source == "osrt":
+        if any(pattern in lowered for pattern in _HOST_WAIT_PATTERNS):
+            return "host_wait"
+    return None
 
 
 def get_top_kernels(
@@ -477,6 +717,756 @@ def find_sync_events(trace_db: TraceDB, *, limit: int = 200) -> Dict[str, Any]:
     if stable is None and (not trace_db.schema.is_text_column(rtable, name_col)):
         notes.append("String table not found; api_name values may be numeric string IDs.")
     return {"table": rtable, "sync_calls": out, "notes": notes, "sql": {"sync_calls": sql}}
+
+
+def find_cpu_gpu_barriers(
+    trace_db: TraceDB,
+    *,
+    limit: int = 50,
+    launcher_gap_threshold_us: float = 50.0,
+) -> Dict[str, Any]:
+    barrier_rows: List[Dict[str, Any]] = []
+    barrier_rows_by_pid: List[Dict[str, Any]] = []
+    per_pid_totals: Dict[int, Dict[str, Any]] = {}
+    notes: List[str] = []
+    sql: Dict[str, str] = {}
+
+    def _update_pid_summary(pid: Optional[int], total_ns: int, api_name: str, barrier_kind: str, count: int) -> None:
+        if pid is None:
+            return
+        bucket = per_pid_totals.setdefault(
+            int(pid),
+            {
+                "pid": int(pid),
+                "total_barrier_time_ns": 0,
+                "barrier_event_count": 0,
+                "top_barrier": None,
+                "top_barrier_kind": None,
+                "top_barrier_time_ns": 0,
+            },
+        )
+        bucket["total_barrier_time_ns"] += int(total_ns)
+        bucket["barrier_event_count"] += int(count)
+        if int(total_ns) > int(bucket["top_barrier_time_ns"]):
+            bucket["top_barrier"] = str(api_name)
+            bucket["top_barrier_kind"] = str(barrier_kind)
+            bucket["top_barrier_time_ns"] = int(total_ns)
+
+    runtime_barriers: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    runtime_barriers_by_pid: Dict[Tuple[int, str, str], Dict[str, Any]] = {}
+    launch_rows: List[Dict[str, Any]] = []
+
+    rtable = trace_db.schema.runtime_table
+    stable = trace_db.schema.string_table
+    if rtable:
+        rinfo = trace_db.schema.table(rtable)
+        name_col = "nameId" if rinfo.has("nameId") else ("name" if rinfo.has("name") else None)
+        pid_expr, _pid_source, _ = _pid_expr_for_table("r", rinfo)
+        if name_col:
+            name_expr = "r.{c}".format(c=name_col)
+            join = ""
+            if stable and not trace_db.schema.is_text_column(rtable, name_col):
+                join = " JOIN {s} s ON s.id = r.{c} ".format(s=stable, c=name_col)
+                name_expr = "s.value"
+
+            filter_patterns = sorted(set(_SYNC_BARRIER_PATTERNS + _BLOCKING_COPY_PATTERNS + _LAUNCH_API_PATTERNS + ("Wait", "Synchronize")))
+            where_parts = ["LOWER({expr}) LIKE ?".format(expr=name_expr) for _ in filter_patterns]
+            params: List[Any] = ["%{}%".format(pattern.lower()) for pattern in filter_patterns]
+            pid_select = "{pid} AS pid,".format(pid=pid_expr) if pid_expr else "NULL AS pid,"
+            sql_runtime = (
+                "SELECT {pid_select} {name} AS api_name, r.start AS start_ns, r.end AS end_ns "
+                "FROM {table} r {join} "
+                "WHERE r.end IS NOT NULL AND r.end > r.start AND (" + " OR ".join(where_parts) + ") "
+                "ORDER BY pid, start_ns"
+            ).format(pid_select=pid_select, name=name_expr, table=rtable, join=join)
+            sql["runtime_barriers"] = sql_runtime
+            for row in trace_db.conn.execute(sql_runtime, tuple(params)).fetchall():
+                api_name = str(row["api_name"])
+                total_ns = max(0, int(row["end_ns"] or 0) - int(row["start_ns"] or 0))
+                pid = int(row["pid"]) if row["pid"] is not None else None
+                barrier_kind = _classify_barrier_kind(api_name, source="runtime")
+                if barrier_kind:
+                    key = (barrier_kind, api_name)
+                    bucket = runtime_barriers.setdefault(
+                        key,
+                        {
+                            "barrier_kind": barrier_kind,
+                            "api_name": api_name,
+                            "count": 0,
+                            "total_time_ns": 0,
+                            "max_duration_ns": 0,
+                        },
+                    )
+                    bucket["count"] += 1
+                    bucket["total_time_ns"] += total_ns
+                    bucket["max_duration_ns"] = max(int(bucket["max_duration_ns"]), int(total_ns))
+                    if pid is not None:
+                        pid_key = (pid, barrier_kind, api_name)
+                        pid_bucket = runtime_barriers_by_pid.setdefault(
+                            pid_key,
+                            {
+                                "pid": pid,
+                                "barrier_kind": barrier_kind,
+                                "api_name": api_name,
+                                "count": 0,
+                                "total_time_ns": 0,
+                                "max_duration_ns": 0,
+                            },
+                        )
+                        pid_bucket["count"] += 1
+                        pid_bucket["total_time_ns"] += total_ns
+                        pid_bucket["max_duration_ns"] = max(int(pid_bucket["max_duration_ns"]), int(total_ns))
+                if _name_matches_patterns(api_name, _LAUNCH_API_PATTERNS):
+                    launch_rows.append(
+                        {
+                            "pid": pid,
+                            "api_name": api_name,
+                            "start_ns": int(row["start_ns"] or 0),
+                            "end_ns": int(row["end_ns"] or 0),
+                        }
+                    )
+        else:
+            notes.append("Runtime table present but missing name/nameId; barrier detection limited.")
+    else:
+        notes.append("No runtime API table found; barrier detection limited to OS runtime waits if available.")
+
+    osrt_table = _pick_table_with_required_cols(
+        trace_db,
+        candidates=("OSRT_API",),
+        required_cols=("start", "end"),
+        name_hint="OSRT",
+    )
+    if osrt_table:
+        oinfo = trace_db.schema.table(osrt_table)
+        name_col = "nameId" if oinfo.has("nameId") else ("name" if oinfo.has("name") else None)
+        pid_expr, _pid_source, _ = _pid_expr_for_table("o", oinfo)
+        if name_col:
+            name_expr = "o.{c}".format(c=name_col)
+            join = ""
+            if stable and not trace_db.schema.is_text_column(osrt_table, name_col):
+                join = " JOIN {s} s ON s.id = o.{c} ".format(s=stable, c=name_col)
+                name_expr = "s.value"
+            where_parts = ["LOWER({expr}) LIKE ?".format(expr=name_expr) for _ in _HOST_WAIT_PATTERNS]
+            params = ["%{}%".format(pattern.lower()) for pattern in _HOST_WAIT_PATTERNS]
+            pid_select = "{pid} AS pid,".format(pid=pid_expr) if pid_expr else "NULL AS pid,"
+            sql_osrt = (
+                "SELECT {pid_select} {name} AS api_name, COUNT(*) AS call_count, "
+                "SUM(o.end-o.start) AS total_time_ns, AVG(o.end-o.start) AS avg_time_ns, "
+                "MAX(o.end-o.start) AS max_time_ns "
+                "FROM {table} o {join} "
+                "WHERE o.end IS NOT NULL AND o.end > o.start AND (" + " OR ".join(where_parts) + ") "
+                "GROUP BY pid, api_name "
+                "ORDER BY total_time_ns DESC"
+            ).format(pid_select=pid_select, name=name_expr, table=osrt_table, join=join)
+            sql["osrt_waits"] = sql_osrt
+            for row in trace_db.conn.execute(sql_osrt, tuple(params)).fetchall():
+                api_name = str(row["api_name"])
+                pid = int(row["pid"]) if row["pid"] is not None else None
+                total_ns = int(row["total_time_ns"] or 0)
+                barrier_rows.append(
+                    {
+                        "barrier_kind": "host_wait",
+                        "api_name": api_name,
+                        "count": int(row["call_count"] or 0),
+                        "total_time_ms": _ns_to_ms(total_ns),
+                        "avg_duration_us": _ns_to_us(float(row["avg_time_ns"] or 0.0)),
+                        "max_duration_us": _ns_to_us(float(row["max_time_ns"] or 0.0)),
+                    }
+                )
+                if pid is not None:
+                    barrier_rows_by_pid.append(
+                        {
+                            "pid": pid,
+                            "barrier_kind": "host_wait",
+                            "api_name": api_name,
+                            "count": int(row["call_count"] or 0),
+                            "total_time_ms": _ns_to_ms(total_ns),
+                            "avg_duration_us": _ns_to_us(float(row["avg_time_ns"] or 0.0)),
+                            "max_duration_us": _ns_to_us(float(row["max_time_ns"] or 0.0)),
+                        }
+                    )
+                    _update_pid_summary(pid, total_ns, api_name, "host_wait", int(row["call_count"] or 0))
+
+    for row in runtime_barriers.values():
+        total_ns = int(row["total_time_ns"] or 0)
+        barrier_rows.append(
+            {
+                "barrier_kind": str(row["barrier_kind"]),
+                "api_name": str(row["api_name"]),
+                "count": int(row["count"] or 0),
+                "total_time_ms": _ns_to_ms(total_ns),
+                "avg_duration_us": _ns_to_us(_safe_div(float(total_ns), float(row["count"] or 0))),
+                "max_duration_us": _ns_to_us(float(row["max_duration_ns"] or 0.0)),
+            }
+        )
+
+    for row in runtime_barriers_by_pid.values():
+        total_ns = int(row["total_time_ns"] or 0)
+        pid = int(row["pid"])
+        barrier_rows_by_pid.append(
+            {
+                "pid": pid,
+                "barrier_kind": str(row["barrier_kind"]),
+                "api_name": str(row["api_name"]),
+                "count": int(row["count"] or 0),
+                "total_time_ms": _ns_to_ms(total_ns),
+                "avg_duration_us": _ns_to_us(_safe_div(float(total_ns), float(row["count"] or 0))),
+                "max_duration_us": _ns_to_us(float(row["max_duration_ns"] or 0.0)),
+            }
+        )
+        _update_pid_summary(pid, total_ns, str(row["api_name"]), str(row["barrier_kind"]), int(row["count"] or 0))
+
+    launcher_gap_threshold_ns = int(float(launcher_gap_threshold_us) * 1_000.0)
+    if launch_rows:
+        launch_rows.sort(key=lambda item: ((item["pid"] if item["pid"] is not None else -1), item["start_ns"], item["end_ns"]))
+        gaps_global: List[int] = []
+        gaps_by_pid: Dict[int, List[int]] = {}
+        previous_end_by_pid: Dict[Optional[int], int] = {}
+        for row in launch_rows:
+            pid = row["pid"]
+            previous_end = previous_end_by_pid.get(pid)
+            if previous_end is not None:
+                gap_ns = max(0, int(row["start_ns"]) - int(previous_end))
+                if gap_ns >= launcher_gap_threshold_ns:
+                    gaps_global.append(gap_ns)
+                    if pid is not None:
+                        gaps_by_pid.setdefault(int(pid), []).append(gap_ns)
+            previous_end_by_pid[pid] = max(int(previous_end or 0), int(row["end_ns"]))
+
+        if gaps_global:
+            gaps_global.sort()
+            total_ns = sum(gaps_global)
+            barrier_rows.append(
+                {
+                    "barrier_kind": "cpu_launcher_gap",
+                    "api_name": "cpu_launcher_gap",
+                    "count": len(gaps_global),
+                    "total_time_ms": _ns_to_ms(total_ns),
+                    "avg_duration_us": _ns_to_us(_safe_div(float(total_ns), float(len(gaps_global)))),
+                    "max_duration_us": _ns_to_us(float(gaps_global[-1])),
+                }
+            )
+            for pid, gaps in gaps_by_pid.items():
+                gaps.sort()
+                total_pid_ns = sum(gaps)
+                barrier_rows_by_pid.append(
+                    {
+                        "pid": int(pid),
+                        "barrier_kind": "cpu_launcher_gap",
+                        "api_name": "cpu_launcher_gap",
+                        "count": len(gaps),
+                        "total_time_ms": _ns_to_ms(total_pid_ns),
+                        "avg_duration_us": _ns_to_us(_safe_div(float(total_pid_ns), float(len(gaps)))),
+                        "max_duration_us": _ns_to_us(float(gaps[-1])),
+                    }
+                )
+                _update_pid_summary(int(pid), int(total_pid_ns), "cpu_launcher_gap", "cpu_launcher_gap", len(gaps))
+
+    barrier_rows.sort(key=lambda item: (-float(item.get("total_time_ms") or 0.0), -int(item.get("count") or 0), str(item.get("api_name") or "")))
+    barrier_rows_by_pid.sort(
+        key=lambda item: (
+            int(item.get("pid") or -1),
+            -float(item.get("total_time_ms") or 0.0),
+            -int(item.get("count") or 0),
+            str(item.get("api_name") or ""),
+        )
+    )
+
+    pid_summaries: List[Dict[str, Any]] = []
+    for pid, row in sorted(per_pid_totals.items(), key=lambda item: item[1]["total_barrier_time_ns"], reverse=True):
+        pid_summaries.append(
+            {
+                "pid": int(pid),
+                "total_barrier_time_ms": _ns_to_ms(int(row["total_barrier_time_ns"] or 0)),
+                "barrier_event_count": int(row["barrier_event_count"] or 0),
+                "top_barrier": row.get("top_barrier"),
+                "top_barrier_kind": row.get("top_barrier_kind"),
+            }
+        )
+
+    return {
+        "present": bool(barrier_rows),
+        "barriers": barrier_rows[: int(limit)],
+        "barriers_by_pid": barrier_rows_by_pid,
+        "pids": pid_summaries,
+        "launcher_gap_threshold_us": float(launcher_gap_threshold_us),
+        "notes": notes,
+        "sql": sql,
+    }
+
+
+def detect_nccl_ops(trace_db: TraceDB, *, limit: int = 20) -> Dict[str, Any]:
+    selected_events: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    sql: Dict[str, str] = {}
+
+    def _collect_nvtx_events() -> List[Dict[str, Any]]:
+        ntable = trace_db.schema.nvtx_table
+        if not ntable:
+            return []
+        ninfo = trace_db.schema.table(ntable)
+        if not ninfo.has("end"):
+            return []
+
+        pid_expr, _pid_source, _ = _pid_expr_for_table("n", ninfo)
+        range_expr, join = _resolve_name_expr(
+            trace_db,
+            table=ntable,
+            alias="n",
+            info=ninfo,
+            text_col="text",
+            text_id_col="textId",
+            string_alias="sn",
+        )
+        payload_expr, payload_join = _resolve_name_expr(
+            trace_db,
+            table=ntable,
+            alias="n",
+            info=ninfo,
+            text_col="jsonText",
+            text_id_col="jsonTextId",
+            string_alias="sj",
+        )
+        full_join = (join or "") + (payload_join or "")
+        predicates: List[str] = []
+        params: List[Any] = []
+        for pattern in _NCCL_SIGNAL_PATTERNS:
+            predicates.append("LOWER(COALESCE({expr}, '')) LIKE ?".format(expr=range_expr))
+            params.append("%{}%".format(pattern.lower()))
+            if payload_expr != "''":
+                predicates.append("LOWER(COALESCE({expr}, '')) LIKE ?".format(expr=payload_expr))
+                params.append("%{}%".format(pattern.lower()))
+        pid_select = "{pid} AS pid,".format(pid=pid_expr) if pid_expr else "NULL AS pid,"
+        event_type_filter = ""
+        if ninfo.has("eventType"):
+            event_type_filter = " AND n.eventType IN (59, 60)"
+        sql_events = (
+            "SELECT {pid_select} {name} AS range_name, {payload} AS payload_json, "
+            "n.start AS start_ns, n.end AS end_ns "
+            "FROM {table} n {join} "
+            "WHERE n.end IS NOT NULL AND n.end > n.start{event_type_filter} AND (" + " OR ".join(predicates) + ") "
+            "ORDER BY n.start"
+        ).format(
+            pid_select=pid_select,
+            name=range_expr,
+            payload=payload_expr,
+            table=ntable,
+            join=full_join,
+            event_type_filter=event_type_filter,
+        )
+        sql["nccl_nvtx"] = sql_events
+        rows: List[Dict[str, Any]] = []
+        for row in trace_db.conn.execute(sql_events, tuple(params)).fetchall():
+            range_name = str(row["range_name"] or "")
+            payload_json = str(row["payload_json"] or "")
+            if not _looks_like_nccl(range_name, payload_json):
+                continue
+            rows.append(
+                {
+                    "source": "nvtx",
+                    "raw_name": range_name or "nccl_op",
+                    "op_name": _classify_nccl_collective(range_name, payload_json) or range_name or "nccl_op",
+                    "start_ns": int(row["start_ns"] or 0),
+                    "end_ns": int(row["end_ns"] or 0),
+                    "dur_ns": max(0, int(row["end_ns"] or 0) - int(row["start_ns"] or 0)),
+                    "pid": int(row["pid"]) if row["pid"] is not None else None,
+                    "rank_label": _extract_rank_label(range_name, payload_json),
+                    "device_id": None,
+                }
+            )
+        return rows
+
+    def _collect_runtime_events() -> List[Dict[str, Any]]:
+        rtable = trace_db.schema.runtime_table
+        if not rtable:
+            return []
+        rinfo = trace_db.schema.table(rtable)
+        name_col = "nameId" if rinfo.has("nameId") else ("name" if rinfo.has("name") else None)
+        if not name_col:
+            return []
+        pid_expr, _pid_source, _ = _pid_expr_for_table("r", rinfo)
+        name_expr = "r.{c}".format(c=name_col)
+        join = ""
+        stable = trace_db.schema.string_table
+        if stable and not trace_db.schema.is_text_column(rtable, name_col):
+            join = " JOIN {s} s ON s.id = r.{c} ".format(s=stable, c=name_col)
+            name_expr = "s.value"
+        predicates = ["LOWER({expr}) LIKE ?".format(expr=name_expr) for _ in _NCCL_SIGNAL_PATTERNS]
+        params = ["%{}%".format(pattern.lower()) for pattern in _NCCL_SIGNAL_PATTERNS]
+        pid_select = "{pid} AS pid,".format(pid=pid_expr) if pid_expr else "NULL AS pid,"
+        sql_events = (
+            "SELECT {pid_select} {name} AS api_name, r.start AS start_ns, r.end AS end_ns "
+            "FROM {table} r {join} "
+            "WHERE r.end IS NOT NULL AND r.end > r.start AND (" + " OR ".join(predicates) + ") "
+            "ORDER BY r.start"
+        ).format(pid_select=pid_select, name=name_expr, table=rtable, join=join)
+        sql["nccl_runtime"] = sql_events
+        rows: List[Dict[str, Any]] = []
+        for row in trace_db.conn.execute(sql_events, tuple(params)).fetchall():
+            api_name = str(row["api_name"] or "")
+            if not _looks_like_nccl(api_name):
+                continue
+            rows.append(
+                {
+                    "source": "runtime",
+                    "raw_name": api_name or "nccl_op",
+                    "op_name": _classify_nccl_collective(api_name) or api_name or "nccl_op",
+                    "start_ns": int(row["start_ns"] or 0),
+                    "end_ns": int(row["end_ns"] or 0),
+                    "dur_ns": max(0, int(row["end_ns"] or 0) - int(row["start_ns"] or 0)),
+                    "pid": int(row["pid"]) if row["pid"] is not None else None,
+                    "rank_label": _extract_rank_label(api_name),
+                    "device_id": None,
+                }
+            )
+        return rows
+
+    def _collect_kernel_events() -> List[Dict[str, Any]]:
+        ktable = trace_db.schema.kernel_table
+        if not ktable:
+            return []
+        kinfo = trace_db.schema.table(ktable)
+        name_col = "demangledName" if kinfo.has("demangledName") else ("shortName" if kinfo.has("shortName") else None)
+        if not name_col:
+            return []
+        pid_expr, _pid_source, _ = _pid_expr_for_table("k", kinfo)
+        name_expr = "k.{c}".format(c=name_col)
+        join = ""
+        stable = trace_db.schema.string_table
+        if stable and not trace_db.schema.is_text_column(ktable, name_col):
+            join = " JOIN {s} s ON s.id = k.{c} ".format(s=stable, c=name_col)
+            name_expr = "s.value"
+        predicates = ["LOWER({expr}) LIKE ?".format(expr=name_expr)]
+        params = ["%nccl%"]
+        pid_select = "{pid} AS pid,".format(pid=pid_expr) if pid_expr else "NULL AS pid,"
+        dev_select = "k.deviceId AS device_id," if kinfo.has("deviceId") else "NULL AS device_id,"
+        sql_events = (
+            "SELECT {pid_select} {dev_select} {name} AS kernel_name, k.start AS start_ns, k.end AS end_ns "
+            "FROM {table} k {join} "
+            "WHERE k.end IS NOT NULL AND k.end > k.start AND (" + " OR ".join(predicates) + ") "
+            "ORDER BY k.start"
+        ).format(pid_select=pid_select, dev_select=dev_select, name=name_expr, table=ktable, join=join)
+        sql["nccl_kernels"] = sql_events
+        rows: List[Dict[str, Any]] = []
+        for row in trace_db.conn.execute(sql_events, tuple(params)).fetchall():
+            kernel_name = str(row["kernel_name"] or "")
+            if not _looks_like_nccl(kernel_name):
+                continue
+            rows.append(
+                {
+                    "source": "kernel",
+                    "raw_name": kernel_name or "nccl_op",
+                    "op_name": _classify_nccl_collective(kernel_name) or kernel_name or "nccl_op",
+                    "start_ns": int(row["start_ns"] or 0),
+                    "end_ns": int(row["end_ns"] or 0),
+                    "dur_ns": max(0, int(row["end_ns"] or 0) - int(row["start_ns"] or 0)),
+                    "pid": int(row["pid"]) if row["pid"] is not None else None,
+                    "rank_label": _extract_rank_label(kernel_name),
+                    "device_id": int(row["device_id"]) if row["device_id"] is not None else None,
+                }
+            )
+        return rows
+
+    nvtx_events = _collect_nvtx_events()
+    runtime_events = _collect_runtime_events()
+    kernel_events = _collect_kernel_events()
+
+    if nvtx_events:
+        selected_events = nvtx_events
+        notes.append("Using NVTX ranges as NCCL windows (best-effort; works with Nsight Systems NCCL trace or app-emitted NCCL NVTX labels).")
+    elif runtime_events:
+        selected_events = runtime_events
+        notes.append("Using runtime API calls as NCCL windows.")
+    elif kernel_events:
+        selected_events = kernel_events
+        notes.append("Using NCCL kernel names as NCCL windows; collective names may be inferred only from kernel names.")
+    else:
+        return {
+            "present": False,
+            "source": None,
+            "ops": [],
+            "pids": [],
+            "event_count": 0,
+            "windows": [],
+            "notes": ["No NCCL-like activity found in NVTX ranges, runtime API rows, or kernel names."],
+            "sql": sql,
+        }
+
+    compute_intervals: List[Tuple[int, int]] = []
+    ktable = trace_db.schema.kernel_table
+    if ktable:
+        kinfo = trace_db.schema.table(ktable)
+        name_col = "demangledName" if kinfo.has("demangledName") else ("shortName" if kinfo.has("shortName") else None)
+        if name_col:
+            name_expr = "k.{c}".format(c=name_col)
+            join = ""
+            stable = trace_db.schema.string_table
+            if stable and not trace_db.schema.is_text_column(ktable, name_col):
+                join = " JOIN {s} s ON s.id = k.{c} ".format(s=stable, c=name_col)
+                name_expr = "s.value"
+            sql_compute = (
+                "SELECT k.start AS start_ns, k.end AS end_ns, {name} AS kernel_name "
+                "FROM {table} k {join} "
+                "WHERE k.end IS NOT NULL AND k.end > k.start "
+                "ORDER BY k.start"
+            ).format(name=name_expr, table=ktable, join=join)
+            sql["compute_overlap"] = sql_compute
+            for row in trace_db.conn.execute(sql_compute).fetchall():
+                kernel_name = str(row["kernel_name"] or "")
+                if _looks_like_nccl(kernel_name):
+                    continue
+                compute_intervals.append((int(row["start_ns"] or 0), int(row["end_ns"] or 0)))
+    merged_compute_intervals = _merge_intervals(compute_intervals)
+
+    op_buckets: Dict[str, Dict[str, Any]] = {}
+    pid_buckets: Dict[int, Dict[str, Any]] = {}
+    windows = _merge_intervals([(int(event["start_ns"]), int(event["end_ns"])) for event in selected_events])
+    for event in selected_events:
+        overlap_ns = _interval_overlap_ns(merged_compute_intervals, int(event["start_ns"]), int(event["end_ns"]))
+        event["compute_overlap_ns"] = overlap_ns
+        label = str(event["op_name"])
+        bucket = op_buckets.setdefault(
+            label,
+            {
+                "op_name": label,
+                "raw_name_example": str(event["raw_name"]),
+                "count": 0,
+                "total_time_ns": 0,
+                "max_duration_ns": 0,
+                "total_compute_overlap_ns": 0,
+                "source": str(event["source"]),
+                "straggler_label": None,
+                "straggler_total_ns": 0,
+                "straggler_max_ns": 0,
+                "_stragglers": {},
+            },
+        )
+        bucket["count"] += 1
+        bucket["total_time_ns"] += int(event["dur_ns"])
+        bucket["max_duration_ns"] = max(int(bucket["max_duration_ns"]), int(event["dur_ns"]))
+        bucket["total_compute_overlap_ns"] += int(overlap_ns)
+        straggler_label = event.get("rank_label")
+        if straggler_label is None and event.get("pid") is not None:
+            straggler_label = "pid:{}".format(int(event["pid"]))
+        if straggler_label is not None:
+            sb = bucket["_stragglers"].setdefault(straggler_label, {"total_ns": 0, "max_ns": 0})
+            sb["total_ns"] += int(event["dur_ns"])
+            sb["max_ns"] = max(int(sb["max_ns"]), int(event["dur_ns"]))
+        if event.get("pid") is not None:
+            pid = int(event["pid"])
+            pid_bucket = pid_buckets.setdefault(
+                pid,
+                {
+                    "pid": pid,
+                    "total_nccl_time_ns": 0,
+                    "nccl_event_count": 0,
+                    "max_duration_ns": 0,
+                    "top_nccl_op": None,
+                    "top_nccl_op_time_ns": 0,
+                },
+            )
+            pid_bucket["total_nccl_time_ns"] += int(event["dur_ns"])
+            pid_bucket["nccl_event_count"] += 1
+            pid_bucket["max_duration_ns"] = max(int(pid_bucket["max_duration_ns"]), int(event["dur_ns"]))
+            op_total = pid_bucket.get("_ops", {})
+            op_total[label] = op_total.get(label, 0) + int(event["dur_ns"])
+            pid_bucket["_ops"] = op_total
+
+    ops: List[Dict[str, Any]] = []
+    for bucket in op_buckets.values():
+        best_label = None
+        best_total_ns = -1
+        best_max_ns = -1
+        for straggler_label, values in bucket["_stragglers"].items():
+            total_ns = int(values["total_ns"])
+            max_ns = int(values["max_ns"])
+            if (total_ns, max_ns, str(straggler_label)) > (best_total_ns, best_max_ns, str(best_label)):
+                best_label = straggler_label
+                best_total_ns = total_ns
+                best_max_ns = max_ns
+        total_ns = int(bucket["total_time_ns"] or 0)
+        overlap_ns = int(bucket["total_compute_overlap_ns"] or 0)
+        ops.append(
+            {
+                "op_name": str(bucket["op_name"]),
+                "raw_name_example": str(bucket["raw_name_example"]),
+                "source": str(bucket["source"]),
+                "count": int(bucket["count"] or 0),
+                "total_time_ms": _ns_to_ms(total_ns),
+                "max_duration_ms": _ns_to_ms(int(bucket["max_duration_ns"] or 0)),
+                "avg_duration_us": _ns_to_us(_safe_div(float(total_ns), float(bucket["count"] or 0))),
+                "compute_overlap_ms": _ns_to_ms(overlap_ns),
+                "compute_overlap_pct": (_safe_div(float(overlap_ns), float(total_ns)) * 100.0) if total_ns else 0.0,
+                "straggler": best_label,
+                "straggler_total_ms": _ns_to_ms(best_total_ns) if best_total_ns >= 0 else None,
+                "straggler_max_ms": _ns_to_ms(best_max_ns) if best_max_ns >= 0 else None,
+            }
+        )
+    ops.sort(key=lambda item: (-float(item["total_time_ms"]), -float(item["max_duration_ms"]), str(item["op_name"])))
+
+    pid_rows: List[Dict[str, Any]] = []
+    for pid, bucket in sorted(pid_buckets.items(), key=lambda item: item[1]["total_nccl_time_ns"], reverse=True):
+        best_op = None
+        best_ns = -1
+        for op_name, total_ns in (bucket.get("_ops") or {}).items():
+            if int(total_ns) > best_ns:
+                best_op = str(op_name)
+                best_ns = int(total_ns)
+        pid_rows.append(
+            {
+                "pid": int(pid),
+                "total_nccl_time_ms": _ns_to_ms(int(bucket["total_nccl_time_ns"] or 0)),
+                "nccl_event_count": int(bucket["nccl_event_count"] or 0),
+                "max_duration_ms": _ns_to_ms(int(bucket["max_duration_ns"] or 0)),
+                "top_nccl_op": best_op,
+            }
+        )
+
+    return {
+        "present": True,
+        "source": str(selected_events[0]["source"]) if selected_events else None,
+        "ops": ops[: int(limit)],
+        "pids": pid_rows,
+        "event_count": len(selected_events),
+        "windows": [{"start_ns": int(s), "end_ns": int(e)} for s, e in windows],
+        "notes": notes,
+        "sql": sql,
+    }
+
+
+def correlate_nvlink_with_nccl(trace_db: TraceDB, nccl: Mapping[str, Any]) -> Dict[str, Any]:
+    windows = [
+        (int(item.get("start_ns") or 0), int(item.get("end_ns") or 0))
+        for item in (nccl.get("windows") or [])
+        if int(item.get("end_ns") or 0) > int(item.get("start_ns") or 0)
+    ]
+    if not windows:
+        return {
+            "present": False,
+            "missing_counters": False,
+            "rows": [],
+            "notes": ["No NCCL windows available for NVLink correlation."],
+            "capture_instructions": [],
+            "sql": {},
+        }
+
+    metrics_table = _pick_table_with_required_cols(
+        trace_db,
+        candidates=("GPU_METRICS",),
+        required_cols=("timestamp", "metricId", "value"),
+        name_hint="GPU_METRICS",
+    )
+    target_table = _pick_table_with_required_cols(
+        trace_db,
+        candidates=("TARGET_INFO_GPU_METRICS",),
+        required_cols=("metricId", "metricName"),
+        name_hint="GPU_METRICS",
+    )
+    if not metrics_table or not target_table:
+        return {
+            "present": False,
+            "missing_counters": True,
+            "rows": [],
+            "notes": ["GPU metric tables were not found in this export."],
+            "capture_instructions": _metric_capture_instructions(include_nccl=bool(nccl.get("present"))),
+            "sql": {},
+        }
+
+    tinfo = trace_db.schema.table(target_table)
+    join_cond = "m.metricId = t.metricId"
+    if tinfo.has("typeId"):
+        join_cond += " AND m.typeId = t.typeId"
+    predicates = ["LOWER(t.metricName) LIKE ?" for _ in _NVLINK_SIGNAL_PATTERNS]
+    params = ["%{}%".format(pattern.lower()) for pattern in _NVLINK_SIGNAL_PATTERNS]
+    type_select = "m.typeId AS metric_source_id," if trace_db.schema.table(metrics_table).has("typeId") else "NULL AS metric_source_id,"
+    sql_metrics = (
+        "SELECT {type_select} m.timestamp AS timestamp_ns, t.metricName AS metric_name, m.value AS metric_value "
+        "FROM {metrics} m JOIN {target} t ON {join_cond} "
+        "WHERE " + " OR ".join(predicates) + " "
+        "ORDER BY metric_source_id, timestamp_ns"
+    ).format(type_select=type_select, metrics=metrics_table, target=target_table, join_cond=join_cond)
+    rows = trace_db.conn.execute(sql_metrics, tuple(params)).fetchall()
+    if not rows:
+        return {
+            "present": False,
+            "missing_counters": True,
+            "rows": [],
+            "notes": ["GPU metric tables exist, but no NVLink-related metrics were exported."],
+            "capture_instructions": _metric_capture_instructions(include_nccl=bool(nccl.get("present"))),
+            "sql": {"nvlink_metrics": sql_metrics},
+        }
+
+    sql: Dict[str, str] = {"nvlink_metrics": sql_metrics}
+    grouped: Dict[Any, List[Tuple[int, float, str]]] = {}
+    for row in rows:
+        metric_source_id = row["metric_source_id"] if "metric_source_id" in row.keys() else None
+        grouped.setdefault(metric_source_id, []).append(
+            (int(row["timestamp_ns"] or 0), float(row["metric_value"] or 0.0), str(row["metric_name"] or ""))
+        )
+
+    report_rows: List[Dict[str, Any]] = []
+    for metric_source_id, samples in grouped.items():
+        samples.sort(key=lambda item: item[0])
+        total_value = 0.0
+        total_count = 0
+        active_value = 0.0
+        active_count = 0
+        active_values: List[float] = []
+        inactive_value = 0.0
+        inactive_count = 0
+        metric_names = sorted({sample[2] for sample in samples})
+        xs: List[float] = []
+        ys: List[float] = []
+        for timestamp_ns, metric_value, _metric_name in samples:
+            active = 1.0 if _interval_overlap_ns(windows, int(timestamp_ns), int(timestamp_ns) + 1) > 0 else 0.0
+            total_value += float(metric_value)
+            total_count += 1
+            xs.append(active)
+            ys.append(float(metric_value))
+            if active > 0.0:
+                active_value += float(metric_value)
+                active_count += 1
+                active_values.append(float(metric_value))
+            else:
+                inactive_value += float(metric_value)
+                inactive_count += 1
+
+        mean_x = _safe_div(sum(xs), float(len(xs))) if xs else 0.0
+        mean_y = _safe_div(sum(ys), float(len(ys))) if ys else 0.0
+        cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+        var_x = sum((x - mean_x) ** 2 for x in xs)
+        var_y = sum((y - mean_y) ** 2 for y in ys)
+        corr = _safe_div(cov, math.sqrt(var_x * var_y)) if var_x > 0 and var_y > 0 else 0.0
+        report_rows.append(
+            {
+                "metric_source_id": metric_source_id,
+                "metric_names": ", ".join(metric_names),
+                "samples": int(total_count),
+                "samples_during_nccl": int(active_count),
+                "avg_metric_during_nccl": _safe_div(active_value, float(active_count)),
+                "avg_metric_outside_nccl": _safe_div(inactive_value, float(inactive_count)),
+                "max_metric_during_nccl": max(active_values) if active_values else 0.0,
+                "nccl_activity_correlation": float(corr),
+            }
+        )
+    report_rows.sort(
+        key=lambda item: (
+            -float(item.get("avg_metric_during_nccl") or 0.0),
+            -float(item.get("nccl_activity_correlation") or 0.0),
+            str(item.get("metric_source_id") or ""),
+        )
+    )
+    return {
+        "present": True,
+        "missing_counters": False,
+        "rows": report_rows,
+        "notes": [
+            "Correlation is computed between sampled NVLink metric values and a binary NCCL-active timeline derived from NCCL windows.",
+            "GPU Metrics are device-level samples; they are not process-attributed in the SQLite export.",
+        ],
+        "capture_instructions": [],
+        "sql": sql,
+    }
 
 
 def _merge_intervals(intervals: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
@@ -1692,4 +2682,3 @@ def write_csv(rows: Sequence[Dict[str, Any]], path: Path) -> None:
 def write_json(obj: Any, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
