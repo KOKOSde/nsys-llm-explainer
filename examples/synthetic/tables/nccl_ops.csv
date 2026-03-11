@@ -1,0 +1,3 @@
+op_name,raw_name_example,source,count,total_time_ms,max_duration_ms,avg_duration_us,compute_overlap_ms,compute_overlap_pct,straggler,straggler_total_ms,straggler_max_ms
+allreduce,ncclAllReduceRingKernel,kernel,1,2.0,2.0,2000.0,1.0,50.0,pid:111,2.0,2.0
+broadcast,ncclBroadcastRingKernel,kernel,1,1.5,1.5,1500.0,0.6,40.0,pid:222,1.5,1.5

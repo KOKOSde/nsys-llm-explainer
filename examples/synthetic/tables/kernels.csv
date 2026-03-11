@@ -1,0 +1,4 @@
+kernel_name,device_id,call_count,total_time_ns,total_time_ms,avg_duration_us,min_duration_us,max_duration_us,p50_duration_us,p90_duration_us,pct_total_kernel_time
+computeKernel,0,3,2600000,2.6,866.6666666666666,600.0,1000.0,1000.0,1000.0,42.62295081967213
+ncclAllReduceRingKernel,0,1,2000000,2.0,2000.0,2000.0,2000.0,2000.0,2000.0,32.78688524590164
+ncclBroadcastRingKernel,0,1,1500000,1.5,1500.0,1500.0,1500.0,1500.0,1500.0,24.59016393442623

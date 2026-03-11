@@ -1,0 +1,2 @@
+device_id,gap_start_ns,gap_end_ns,gap_ms
+0,3000000,4000000,1.0

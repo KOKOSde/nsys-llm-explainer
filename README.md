@@ -24,6 +24,16 @@ The repo is intentionally conservative:
 - If NVLink counters are missing, it prints `NVLink counters not found` and tells you exactly how to re-capture.
 - If only NCCL kernel names are available, it degrades to kernel-name-based NCCL detection instead of pretending it saw higher-level collectives.
 
+### New: NCCL + NVLink + Barrier analysis
+
+The fastest way to verify the current report shape is the committed synthetic example:
+
+- Example report with all current section headers: [examples/synthetic/report.md](examples/synthetic/report.md)
+- The example is generated from the synthetic SQLite fixture in `tests/test_synthetic_sqlite.py`, so it is small and reproducible.
+- Exact visible section names:
+  `Global critical path suspects`, `Top NCCL ops`, `NVLink during NCCL`, `Top CPU↔GPU barriers`, `Per-process breakdown`
+- If the report says `NVLink counters not found`, jump to [NVLink counters guidance](#3-nvlink-counters-guidance) for the re-capture command.
+
 ### Install
 
 ```bash
@@ -217,11 +227,10 @@ avg_metric_outside_nccl: 5.83
 nccl_activity_correlation: 0.990
 ```
 
-### Real example
+### Committed examples
 
-`examples/a100_vllm/` still contains a committed real output-only example from an A100 vLLM run.
-
-That example predates the new NCCL/NVLink capture guidance, so the newly added NCCL/NVLink sections are easiest to verify with a fresh capture or with the synthetic fixture-backed tests.
+- [examples/synthetic/report.md](examples/synthetic/report.md): synthetic, fixture-generated, and guaranteed to show the new NCCL/NVLink/barrier/per-process sections.
+- `examples/a100_vllm/`: historical real output-only example from an A100 vLLM run.
 
 ### Schema compatibility
 

@@ -1,0 +1,3 @@
+Synthetic example generated from tests/test_synthetic_sqlite.py::_build_trace_with_nccl_and_barriers
+Purpose: show the committed report sections for NCCL, NVLink-missing fallback, barriers, and per-process output.
+Raw trace.sqlite is intentionally not committed.

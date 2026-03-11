@@ -1,0 +1,5 @@
+pid,pid_total_kernel_time_ms,pid_pct_of_total_kernel_time,kernel_name,device_id,call_count,total_time_ms,avg_duration_us,pct_of_pid_kernel_time,pct_of_total_kernel_time
+111,4.0,65.57377049180327,computeKernel,0,2,2.0,1000.0,50.0,32.78688524590164
+111,4.0,65.57377049180327,ncclAllReduceRingKernel,0,1,2.0,2000.0,50.0,32.78688524590164
+222,2.1,34.42622950819672,ncclBroadcastRingKernel,0,1,1.5,1500.0,71.42857142857143,24.59016393442623
+222,2.1,34.42622950819672,computeKernel,0,1,0.6,600.0,28.57142857142857,9.836065573770492

@@ -1,0 +1,5 @@
+barrier_kind,api_name,count,total_time_ms,avg_duration_us,max_duration_us
+sync_api,cudaStreamSynchronize,1,0.8,800.0,800.0
+sync_api,cudaDeviceSynchronize,1,0.7,700.0,700.0
+blocking_memcpy,cudaMemcpy,1,0.6,600.0,600.0
+cpu_launcher_gap,cpu_launcher_gap,1,0.2,200.0,200.0
