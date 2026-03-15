@@ -57,6 +57,34 @@ Useful flags:
 - `--print-schema`: dump the detected SQLite tables/columns first
 - `--phase-map phases.json`: optional NVTX phase grouping
 
+### Dashboard
+
+Install with dashboard dependencies:
+
+```bash
+python3 -m pip install -e .[dev]
+```
+
+Launch:
+
+```bash
+python3 -m nsys_llm_explainer.dashboard --db path/to/trace.sqlite
+```
+
+You can also launch from exported JSON:
+
+```bash
+python3 -m nsys_llm_explainer.dashboard --db artifacts/run_YYYYMMDD_HHMMSS/report.json
+```
+
+Screenshot placeholder:
+
+```text
+[replace with GIF demo]
+```
+
+The dashboard provides SQLite-backed trace visualization with a kernel waterfall, roofline analysis, NCCL overlap summaries, NVLink correlation, and historical comparison mode (current vs baseline) in one scrollable dark-theme view. It was built using Claude Code / Cursor as part of an agentic profiling workflow.
+
 ### What the report includes
 
 The generated output directory contains:

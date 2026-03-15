@@ -18,6 +18,7 @@ from nsys_llm_explainer.queries import (
     get_top_kernels,
     kernels_by_pid,
     nvtx_breakdown,
+    timeline_events,
 )
 
 
@@ -561,9 +562,14 @@ class TestSyntheticSQLiteFixtures(unittest.TestCase):
                 nvlink = correlate_nvlink_with_nccl(db, nccl)
                 self.assertTrue(nvlink["present"])
                 self.assertTrue(nvlink["rows"])
+                self.assertTrue(nvlink["timeseries"])
                 row = nvlink["rows"][0]
                 self.assertGreater(float(row["avg_metric_during_nccl"]), float(row["avg_metric_outside_nccl"]))
                 self.assertGreaterEqual(float(row["nccl_activity_correlation"]), 0.0)
+
+                timeline = timeline_events(db, limit=20, include_nccl=True)
+                self.assertTrue(timeline["present"])
+                self.assertTrue(timeline["events"])
             finally:
                 db.close()
 

@@ -16,7 +16,11 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
 ]
-dependencies = []
+dependencies = [
+  "dash>=2.17.0",
+  "plotly>=5.22.0",
+  "pandas>=1.5.0",
+]
 
 [project.optional-dependencies]
 pandas = ["pandas"]

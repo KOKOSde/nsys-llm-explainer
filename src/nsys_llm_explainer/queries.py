@@ -271,6 +271,17 @@ _LAUNCH_API_PATTERNS: Tuple[str, ...] = (
     "cuGraphLaunch",
 )
 
+_MEMORY_KERNEL_PATTERNS: Tuple[str, ...] = (
+    "memcpy",
+    "memset",
+    "copy",
+    "load",
+    "store",
+    "gather",
+    "scatter",
+    "transpose",
+)
+
 
 def _lower_text(value: Any) -> str:
     return str(value or "").strip().lower()
@@ -1345,6 +1356,7 @@ def correlate_nvlink_with_nccl(trace_db: TraceDB, nccl: Mapping[str, Any]) -> Di
             "present": False,
             "missing_counters": False,
             "rows": [],
+            "timeseries": [],
             "notes": ["No NCCL windows available for NVLink correlation."],
             "capture_instructions": [],
             "sql": {},
@@ -1367,6 +1379,7 @@ def correlate_nvlink_with_nccl(trace_db: TraceDB, nccl: Mapping[str, Any]) -> Di
             "present": False,
             "missing_counters": True,
             "rows": [],
+            "timeseries": [],
             "notes": ["GPU metric tables were not found in this export."],
             "capture_instructions": _metric_capture_instructions(include_nccl=bool(nccl.get("present"))),
             "sql": {},
@@ -1391,6 +1404,7 @@ def correlate_nvlink_with_nccl(trace_db: TraceDB, nccl: Mapping[str, Any]) -> Di
             "present": False,
             "missing_counters": True,
             "rows": [],
+            "timeseries": [],
             "notes": ["GPU metric tables exist, but no NVLink-related metrics were exported."],
             "capture_instructions": _metric_capture_instructions(include_nccl=bool(nccl.get("present"))),
             "sql": {"nvlink_metrics": sql_metrics},
@@ -1405,6 +1419,7 @@ def correlate_nvlink_with_nccl(trace_db: TraceDB, nccl: Mapping[str, Any]) -> Di
         )
 
     report_rows: List[Dict[str, Any]] = []
+    timeseries_rows: List[Dict[str, Any]] = []
     for metric_source_id, samples in grouped.items():
         samples.sort(key=lambda item: item[0])
         total_value = 0.0
@@ -1423,6 +1438,16 @@ def correlate_nvlink_with_nccl(trace_db: TraceDB, nccl: Mapping[str, Any]) -> Di
             total_count += 1
             xs.append(active)
             ys.append(float(metric_value))
+            timeseries_rows.append(
+                {
+                    "metric_source_id": metric_source_id,
+                    "metric_name": str(_metric_name),
+                    "timestamp_ns": int(timestamp_ns),
+                    "timestamp_ms": _ns_to_ms(int(timestamp_ns)),
+                    "metric_value": float(metric_value),
+                    "nccl_active": bool(active > 0.0),
+                }
+            )
             if active > 0.0:
                 active_value += float(metric_value)
                 active_count += 1
@@ -1460,6 +1485,7 @@ def correlate_nvlink_with_nccl(trace_db: TraceDB, nccl: Mapping[str, Any]) -> Di
         "present": True,
         "missing_counters": False,
         "rows": report_rows,
+        "timeseries": timeseries_rows,
         "notes": [
             "Correlation is computed between sampled NVLink metric values and a binary NCCL-active timeline derived from NCCL windows.",
             "GPU Metrics are device-level samples; they are not process-attributed in the SQLite export.",
@@ -1538,6 +1564,216 @@ def estimate_gpu_idle_gaps(
     gaps.sort(key=lambda g: float(g["gap_ms"]), reverse=True)
     gaps = gaps[: int(top_n_gaps)]
     return {"table": ktable, "devices": devices, "gaps": gaps, "notes": [], "sql": {"events": sql}}
+
+
+def timeline_events(
+    trace_db: TraceDB,
+    *,
+    limit: int = 50,
+    include_nccl: bool = True,
+) -> Dict[str, Any]:
+    """Top timeline events across GPU kernels, CPU stalls, NCCL windows, and GPU idle gaps."""
+
+    events: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    sql: Dict[str, str] = {}
+    stable = trace_db.schema.string_table
+
+    total_gpu_time_ns = 0
+    total_cpu_time_ns = 0
+
+    ktable = trace_db.schema.kernel_table
+    if ktable:
+        total_gpu_time_ns = int(_fetch_one(trace_db.conn, "SELECT SUM(end-start) FROM {t}".format(t=ktable)) or 0)
+        kinfo = trace_db.schema.table(ktable)
+        name_col = "demangledName" if kinfo.has("demangledName") else ("shortName" if kinfo.has("shortName") else None)
+        if name_col:
+            pid_expr, _pid_source, _ = _pid_expr_for_table("k", kinfo)
+            pid_select = "{pid} AS pid,".format(pid=pid_expr) if pid_expr else "NULL AS pid,"
+            stream_select = "k.streamId AS stream_id," if kinfo.has("streamId") else "NULL AS stream_id,"
+            device_select = "k.deviceId AS device_id," if kinfo.has("deviceId") else "NULL AS device_id,"
+            name_expr = "k.{c}".format(c=name_col)
+            join = ""
+            if stable and not trace_db.schema.is_text_column(ktable, name_col):
+                join = " LEFT JOIN {s} sk ON sk.id = k.{c} ".format(s=stable, c=name_col)
+                name_expr = "COALESCE(sk.value, CAST(k.{c} AS TEXT))".format(c=name_col)
+            sql_kernels = (
+                "SELECT {pid_select} {stream_select} {device_select} "
+                "{name} AS event_name, k.start AS start_ns, k.end AS end_ns, "
+                "(k.end-k.start) AS duration_ns "
+                "FROM {table} k {join} "
+                "WHERE k.end IS NOT NULL AND k.end > k.start "
+                "ORDER BY duration_ns DESC "
+                "LIMIT ?"
+            ).format(
+                pid_select=pid_select,
+                stream_select=stream_select,
+                device_select=device_select,
+                name=name_expr,
+                table=ktable,
+                join=join,
+            )
+            sql["timeline_gpu_kernels"] = sql_kernels
+            for row in trace_db.conn.execute(sql_kernels, (int(max(100, limit * 6)),)).fetchall():
+                event_name = str(row["event_name"] or "kernel")
+                is_nccl = _looks_like_nccl(event_name)
+                if is_nccl and not include_nccl:
+                    continue
+                stream_id = int(row["stream_id"]) if row["stream_id"] is not None else None
+                device_id = int(row["device_id"]) if row["device_id"] is not None else None
+                pid = int(row["pid"]) if row["pid"] is not None else None
+                lane = (
+                    "GPU stream {}".format(stream_id)
+                    if stream_id is not None
+                    else ("GPU device {}".format(device_id) if device_id is not None else "GPU")
+                )
+                event_class = "nccl" if is_nccl else "cuda_kernel"
+                if (not is_nccl) and _name_matches_patterns(event_name, _MEMORY_KERNEL_PATTERNS):
+                    event_class = "memory_kernel"
+                start_ns = int(row["start_ns"] or 0)
+                end_ns = int(row["end_ns"] or 0)
+                duration_ns = max(0, int(row["duration_ns"] or 0))
+                events.append(
+                    {
+                        "event_name": event_name,
+                        "event_class": event_class,
+                        "lane": lane,
+                        "pid": pid,
+                        "stream_id": stream_id,
+                        "start_ns": start_ns,
+                        "end_ns": end_ns,
+                        "duration_ns": duration_ns,
+                        "duration_ms": _ns_to_ms(duration_ns),
+                    }
+                )
+
+    rtable = trace_db.schema.runtime_table
+    if rtable:
+        total_cpu_time_ns = int(_fetch_one(trace_db.conn, "SELECT SUM(end-start) FROM {t}".format(t=rtable)) or 0)
+        rinfo = trace_db.schema.table(rtable)
+        name_col = "nameId" if rinfo.has("nameId") else ("name" if rinfo.has("name") else None)
+        if name_col:
+            pid_expr, _pid_source, _ = _pid_expr_for_table("r", rinfo)
+            pid_select = "{pid} AS pid,".format(pid=pid_expr) if pid_expr else "NULL AS pid,"
+            tid_select = "((CAST(r.globalTid AS INT)) % 16777216) AS tid," if rinfo.has("globalTid") else "NULL AS tid,"
+            name_expr = "r.{c}".format(c=name_col)
+            join = ""
+            if stable and not trace_db.schema.is_text_column(rtable, name_col):
+                join = " LEFT JOIN {s} sr ON sr.id = r.{c} ".format(s=stable, c=name_col)
+                name_expr = "COALESCE(sr.value, CAST(r.{c} AS TEXT))".format(c=name_col)
+
+            stall_patterns = sorted(set(_SYNC_BARRIER_PATTERNS + _BLOCKING_COPY_PATTERNS + _HOST_WAIT_PATTERNS + ("wait", "synchronize")))
+            where_parts = ["LOWER({name}) LIKE ?".format(name=name_expr) for _ in stall_patterns]
+            params: List[Any] = ["%{}%".format(pattern.lower()) for pattern in stall_patterns]
+            sql_runtime = (
+                "SELECT {pid_select} {tid_select} {name} AS event_name, "
+                "r.start AS start_ns, r.end AS end_ns, (r.end-r.start) AS duration_ns "
+                "FROM {table} r {join} "
+                "WHERE r.end IS NOT NULL AND r.end > r.start AND (" + " OR ".join(where_parts) + ") "
+                "ORDER BY duration_ns DESC "
+                "LIMIT ?"
+            ).format(
+                pid_select=pid_select,
+                tid_select=tid_select,
+                name=name_expr,
+                table=rtable,
+                join=join,
+            )
+            sql["timeline_cpu_stalls"] = sql_runtime
+            for row in trace_db.conn.execute(sql_runtime, tuple(params) + (int(max(100, limit * 4)),)).fetchall():
+                pid = int(row["pid"]) if row["pid"] is not None else None
+                tid = int(row["tid"]) if row["tid"] is not None else None
+                lane = (
+                    "CPU pid {} tid {}".format(pid, tid)
+                    if (pid is not None and tid is not None)
+                    else ("CPU pid {}".format(pid) if pid is not None else "CPU")
+                )
+                start_ns = int(row["start_ns"] or 0)
+                end_ns = int(row["end_ns"] or 0)
+                duration_ns = max(0, int(row["duration_ns"] or 0))
+                events.append(
+                    {
+                        "event_name": str(row["event_name"] or "cpu_stall"),
+                        "event_class": "cpu_stall",
+                        "lane": lane,
+                        "pid": pid,
+                        "stream_id": None,
+                        "start_ns": start_ns,
+                        "end_ns": end_ns,
+                        "duration_ns": duration_ns,
+                        "duration_ms": _ns_to_ms(duration_ns),
+                    }
+                )
+
+    if include_nccl:
+        nccl = detect_nccl_ops(trace_db, limit=max(20, limit))
+        for idx, window in enumerate(nccl.get("windows") or []):
+            start_ns = int(window.get("start_ns") or 0)
+            end_ns = int(window.get("end_ns") or 0)
+            if end_ns <= start_ns:
+                continue
+            duration_ns = end_ns - start_ns
+            events.append(
+                {
+                    "event_name": "NCCL window {}".format(idx + 1),
+                    "event_class": "nccl",
+                    "lane": "GPU NCCL",
+                    "pid": None,
+                    "stream_id": None,
+                    "start_ns": start_ns,
+                    "end_ns": end_ns,
+                    "duration_ns": duration_ns,
+                    "duration_ms": _ns_to_ms(duration_ns),
+                }
+            )
+
+    idle = estimate_gpu_idle_gaps(trace_db, top_n_gaps=max(20, limit))
+    for gap in idle.get("gaps") or []:
+        start_ns = int(gap.get("gap_start_ns") or 0)
+        end_ns = int(gap.get("gap_end_ns") or 0)
+        if end_ns <= start_ns:
+            continue
+        duration_ns = end_ns - start_ns
+        device_id = gap.get("device_id")
+        events.append(
+            {
+                "event_name": "GPU idle gap",
+                "event_class": "idle",
+                "lane": "GPU device {}".format(device_id) if device_id is not None else "GPU",
+                "pid": None,
+                "stream_id": None,
+                "start_ns": start_ns,
+                "end_ns": end_ns,
+                "duration_ns": duration_ns,
+                "duration_ms": _ns_to_ms(duration_ns),
+            }
+        )
+
+    events.sort(
+        key=lambda item: (
+            -int(item.get("duration_ns") or 0),
+            int(item.get("start_ns") or 0),
+            str(item.get("event_name") or ""),
+        )
+    )
+    top_events = events[: int(limit)]
+    t0_ns = min((int(item.get("start_ns") or 0) for item in top_events), default=0)
+    for item in top_events:
+        item["start_ms"] = _ns_to_ms(int(item.get("start_ns") or 0) - int(t0_ns))
+        item["end_ms"] = _ns_to_ms(int(item.get("end_ns") or 0) - int(t0_ns))
+
+    if not top_events:
+        notes.append("No timeline events available from this trace export.")
+
+    return {
+        "present": bool(top_events),
+        "events": top_events,
+        "t0_ns": int(t0_ns),
+        "total_gpu_time_ms": _ns_to_ms(total_gpu_time_ns),
+        "total_cpu_time_ms": _ns_to_ms(total_cpu_time_ns),
+        "notes": notes,
+        "sql": sql,
+    }
 
 
 def nvtx_breakdown(trace_db: TraceDB, *, limit: int = 50) -> Dict[str, Any]:
