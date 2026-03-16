@@ -94,19 +94,19 @@ Dashboard highlights:
 ### Dashboard screenshots
 
 ![NCCL collectives and NVLink utilization](docs/screenshots/NCCL_Collectives_And_NVLINK_utilizastion.png)
-This view shows collective-time distribution and NVLink activity together, so you can quickly validate whether communication cost and fabric usage match each other.
+NCCL collectives and NVLink utilization: compare collective-time distribution against fabric activity to check whether communication cost and link usage line up.
 
 ![Phase split and per-rank NCCL skew](docs/screenshots/phase_split_and_perrank_NCCL.png)
-This view helps identify which high-level phase dominates runtime and whether one rank is lagging the others during NCCL operations.
+Phase split and per-rank NCCL skew: identify the dominant high-level phase and spot ranks that trail peers during NCCL operations.
 
 ![Roofline scatter and timeline top-50 kernels](docs/screenshots/roofline_scatter_and_Timline_top50.png)
-This view is useful for checking whether dominant kernels are compute-bound or bandwidth-bound and for validating where the heaviest kernels sit in time.
+Roofline scatter and timeline top-50 kernels: determine whether dominant kernels are compute-bound or bandwidth-bound and where the heaviest kernels land in time.
 
 ![Stream concurrency and launch latency](docs/screenshots/stream_concurrency_and_lancy_latency.png)
-This view is used to diagnose overlap quality and CPU launch overhead, including tail latency behavior for kernel launches.
+Stream concurrency and launch latency: diagnose overlap quality, CPU launch overhead, and long-tail launch behavior.
 
 ![Kernel waterfall](docs/screenshots/waterfall.png)
-This view is the fastest way to inspect execution ordering and spot long kernels, bursty launches, and synchronization boundaries across streams.
+Kernel waterfall: inspect execution ordering and quickly spot long kernels, bursty launches, and synchronization boundaries across streams.
 
 ### What the report includes
 
