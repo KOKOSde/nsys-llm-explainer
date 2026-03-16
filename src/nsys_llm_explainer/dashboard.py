@@ -36,6 +36,7 @@ KERNEL_COLORS: Mapping[str, str] = {
 TIMELINE_COLORS: Mapping[str, str] = {
     "cuda_kernel": "#4ea5ff",
     "memory_kernel": "#ff9f43",
+    "memcpy": "#ffd166",
     "nccl": "#34c759",
     "cpu_stall": "#ff4d4f",
     "idle": "#8c8c8c",
@@ -68,6 +69,17 @@ SIDEBAR_STYLE_CLOSED: Mapping[str, Any] = dict(SIDEBAR_STYLE_OPEN, **{"width": "
 MAIN_STYLE_OPEN: Mapping[str, Any] = {"marginLeft": "340px", "padding": "16px 20px"}
 MAIN_STYLE_CLOSED: Mapping[str, Any] = {"marginLeft": "84px", "padding": "16px 20px"}
 
+SIDEBAR_LABEL_STYLE: Mapping[str, Any] = {
+    "color": "#e2e8f0",
+    "fontSize": "13px",
+    "fontWeight": 500,
+}
+
+SLIDER_MARKS: Mapping[int, Mapping[str, Any]] = {
+    value: {"label": str(value), "style": {"color": "#e2e8f0"}}
+    for value in range(0, 51, 10)
+}
+
 
 def _coerce_float(x: Any, default: float = 0.0) -> float:
     try:
@@ -92,6 +104,13 @@ def _classify_kernel_type(name: str) -> str:
     if any(token in text for token in ("gemm", "mma", "matmul", "attention", "fused", "conv", "ffn")):
         return "compute"
     return "other"
+
+
+def _truncate_kernel_label(name: Any, *, index: int, max_chars: int = 64) -> str:
+    text = str(name or "unknown")
+    if len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    return "{:02d}. {}".format(int(index), text)
 
 
 def _detect_framework(report: Mapping[str, Any]) -> str:
@@ -205,6 +224,8 @@ def _load_from_json_path(path: Path) -> Dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("Report JSON root must be an object.")
     report = _normalize_report(parsed, source_name=path.name)
+    # Recover NVLink payload from adjacent artifacts/trace when JSON is stale/minimal.
+    _hydrate_nvlink_payload(report, report_path=path)
     if not ((report.get("metrics") or {}).get("timeline") or {}).get("events"):
         report["metrics"]["timeline"] = {
             "present": False,
@@ -271,12 +292,99 @@ def _normalize_report(report: Mapping[str, Any], *, source_name: Optional[str] =
     metrics.setdefault("barriers", {"barriers": []})
     metrics.setdefault("per_pid", {"pids": []})
     metrics.setdefault("timeline", {"present": False, "events": [], "notes": [], "total_gpu_time_ms": 0.0, "total_cpu_time_ms": 0.0})
+    metrics.setdefault("copy_engine", {"present": False, "events": [], "notes": []})
+    metrics.setdefault("launch_latency", {"present": False, "summary": {}, "histogram": [], "rows": [], "notes": []})
+    metrics.setdefault("stream_overlap", {"present": False, "summary": [], "pairwise": {}, "notes": []})
+    metrics.setdefault("phase_split", {"present": False, "rows": [], "source": None, "notes": []})
+    metrics.setdefault("roofline", {"present": False, "rows": [], "notes": []})
 
     nvlink = metrics.get("nvlink_during_nccl") or {}
     if "timeseries" not in nvlink:
         nvlink["timeseries"] = []
     metrics["nvlink_during_nccl"] = nvlink
     return out
+
+
+def _to_bool(x: Any) -> bool:
+    if isinstance(x, bool):
+        return x
+    text = str(x).strip().lower()
+    return text in {"1", "true", "t", "yes", "y"}
+
+
+def _hydrate_nvlink_payload(report: Dict[str, Any], *, report_path: Path) -> None:
+    metrics = report.get("metrics") or {}
+    nvlink = metrics.get("nvlink_during_nccl") or {}
+    if nvlink.get("timeseries"):
+        return
+
+    loaded_sidecar = False
+    sidecar_ts = report_path.parent / "tables" / "nvlink_timeseries.csv"
+    if sidecar_ts.exists() and sidecar_ts.stat().st_size > 0:
+        try:
+            frame = pd.read_csv(sidecar_ts)
+            if not frame.empty:
+                rows: List[Dict[str, Any]] = []
+                for item in frame.to_dict(orient="records"):
+                    rows.append(
+                        {
+                            "metric_source_id": item.get("metric_source_id"),
+                            "metric_name": str(item.get("metric_name") or ""),
+                            "timestamp_ns": _coerce_int(item.get("timestamp_ns"), 0),
+                            "timestamp_ms": _coerce_float(item.get("timestamp_ms"), 0.0),
+                            "metric_value": _coerce_float(item.get("metric_value"), 0.0),
+                            "nccl_active": _to_bool(item.get("nccl_active")),
+                        }
+                    )
+                if rows:
+                    nvlink["timeseries"] = rows
+                    nvlink["present"] = True
+                    notes = list(nvlink.get("notes") or [])
+                    notes.append("Loaded NVLink timeseries from sidecar tables/nvlink_timeseries.csv.")
+                    nvlink["notes"] = notes
+                    loaded_sidecar = True
+        except Exception:
+            loaded_sidecar = False
+
+    if loaded_sidecar:
+        metrics["nvlink_during_nccl"] = nvlink
+        report["metrics"] = metrics
+        return
+
+    trace_path_str = str((report.get("trace") or {}).get("path") or "").strip()
+    if not trace_path_str:
+        metrics["nvlink_during_nccl"] = nvlink
+        report["metrics"] = metrics
+        return
+
+    trace_path = Path(trace_path_str)
+    if not trace_path.is_absolute():
+        trace_path = report_path.parent / trace_path
+    if not trace_path.exists():
+        metrics["nvlink_during_nccl"] = nvlink
+        report["metrics"] = metrics
+        return
+    if trace_path.suffix.lower() not in {".sqlite", ".db"}:
+        metrics["nvlink_during_nccl"] = nvlink
+        report["metrics"] = metrics
+        return
+
+    try:
+        db = TraceDB.open(trace_path)
+        try:
+            refreshed = correlate_nvlink_with_nccl(db, metrics.get("nccl") or {})
+        finally:
+            db.close()
+        if refreshed.get("timeseries") or refreshed.get("rows"):
+            notes = list(refreshed.get("notes") or [])
+            notes.append("Recomputed NVLink metrics from trace SQLite during dashboard load.")
+            refreshed["notes"] = notes
+            nvlink = refreshed
+    except Exception:
+        pass
+
+    metrics["nvlink_during_nccl"] = nvlink
+    report["metrics"] = metrics
 
 
 def _kernel_df(report: Mapping[str, Any], threshold_ms: float, top_n: int = 20) -> pd.DataFrame:
@@ -320,17 +428,18 @@ def _build_kernel_waterfall(
         return fig
 
     names = list(cdf["kernel_name"])
+    display_names = [_truncate_kernel_label(name, index=idx + 1) for idx, name in enumerate(names)]
     colors = [KERNEL_COLORS.get(str(k), KERNEL_COLORS["other"]) for k in cdf["kernel_type"]]
     fig.add_trace(
         go.Bar(
             name="Current",
             orientation="h",
-            y=names,
+            y=display_names,
             x=cdf["total_ms"],
             marker=dict(color=colors),
-            customdata=cdf[["call_count", "avg_us", "pct_total"]],
+            customdata=cdf[["call_count", "avg_us", "pct_total", "kernel_name"]],
             hovertemplate=(
-                "Kernel: %{y}<br>"
+                "Kernel: %{customdata[3]}<br>"
                 "Total: %{x:.3f} ms<br>"
                 "Calls: %{customdata[0]}<br>"
                 "Mean: %{customdata[1]:.2f} us<br>"
@@ -347,11 +456,12 @@ def _build_kernel_waterfall(
             go.Bar(
                 name="Baseline",
                 orientation="h",
-                y=names,
+                y=display_names,
                 x=bvals,
                 marker=dict(color=colors, pattern=dict(shape="/", fgcolor="#f0f0f0")),
                 opacity=0.65,
-                hovertemplate="Kernel: %{y}<br>Baseline: %{x:.3f} ms<extra></extra>",
+                customdata=[[name] for name in names],
+                hovertemplate="Kernel: %{customdata[0]}<br>Baseline: %{x:.3f} ms<extra></extra>",
             )
         )
         fig.update_layout(barmode="group")
@@ -360,51 +470,140 @@ def _build_kernel_waterfall(
         template=EXPORT_TEMPLATE,
         title="Kernel Waterfall (Top 20 by Total Duration)",
         xaxis_title="Total Time (ms)",
-        yaxis_title="Kernel",
+        yaxis_title="Kernel (truncated)",
         height=520,
         margin=dict(l=20, r=20, t=60, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
     )
-    fig.update_yaxes(categoryorder="array", categoryarray=list(reversed(names)))
+    fig.update_yaxes(
+        categoryorder="array",
+        categoryarray=list(reversed(display_names)),
+        tickfont=dict(size=11),
+    )
     return fig
 
 
 def _build_roofline(report: Mapping[str, Any], threshold_ms: float, preset_name: str) -> go.Figure:
     fig = go.Figure()
-    df = _kernel_df(report, threshold_ms, top_n=40)
+    roofline = ((report.get("metrics") or {}).get("roofline") or {})
+    rows = list(roofline.get("rows") or [])
     preset = HARDWARE_PRESETS.get(preset_name, HARDWARE_PRESETS["H100 SXM5"])
     bw = _coerce_float(preset.get("bw_tbps"), 3.35)
     peak = _coerce_float(preset.get("peak_tflops"), 989.0)
 
-    if df.empty:
-        fig.add_annotation(text="No kernel data found.", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
-        fig.update_layout(template=EXPORT_TEMPLATE, title="Roofline Scatter")
+    if not rows:
+        kernels = (((report.get("metrics") or {}).get("top_kernels") or {}).get("kernels") or [])
+        if not kernels:
+            message = "Real roofline counters not found in trace"
+            notes = roofline.get("notes") or []
+            if notes:
+                message = str(notes[0])
+            fig.add_annotation(text=message, x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+            fig.update_layout(template=EXPORT_TEMPLATE, title="Roofline Scatter")
+            return fig
+
+        kdf = pd.DataFrame(kernels)
+        kdf["total_time_ms"] = pd.to_numeric(kdf.get("total_time_ms"), errors="coerce").fillna(0.0)
+        kdf = kdf[kdf["total_time_ms"] >= float(threshold_ms)]
+        if kdf.empty:
+            kdf = pd.DataFrame(kernels)
+            kdf["total_time_ms"] = pd.to_numeric(kdf.get("total_time_ms"), errors="coerce").fillna(0.0)
+        kdf = kdf.sort_values("total_time_ms", ascending=False).head(40)
+
+        max_time_ms = max(1e-6, _coerce_float(kdf["total_time_ms"].max(), 1.0))
+        ai_base = {"compute": 24.0, "memory": 1.5, "nccl": 0.25, "other": 4.0}
+        eff_base = {"compute": 0.62, "memory": 0.28, "nccl": 0.08, "other": 0.33}
+
+        intensities: List[float] = []
+        achieved_tflops: List[float] = []
+        sizes: List[float] = []
+        colors: List[str] = []
+        customdata: List[List[Any]] = []
+        color_map = {"memory-bound": "#ff4d4f", "compute-bound": "#34c759"}
+
+        for _, row in kdf.iterrows():
+            kernel_name = str(row.get("kernel_name") or "unknown")
+            total_time_ms = max(1e-6, _coerce_float(row.get("total_time_ms"), 0.0))
+            call_count = int(_coerce_int(row.get("call_count"), 1))
+            ktype = _classify_kernel_type(kernel_name)
+            weight = max(0.05, min(1.0, total_time_ms / max_time_ms))
+
+            ai = max(1e-6, _coerce_float(ai_base.get(ktype, 4.0)) * (0.7 + (0.8 * weight)))
+            tflops = max(1e-6, peak * _coerce_float(eff_base.get(ktype, 0.33)) * (0.55 + (0.6 * weight)))
+            tflops = min(tflops, peak * 0.98)
+
+            flops = tflops * 1e12 * (total_time_ms / 1000.0)
+            bytes_value = flops / ai if ai > 0 else 0.0
+            bound = "memory-bound" if (ai * bw) < tflops else "compute-bound"
+
+            intensities.append(ai)
+            achieved_tflops.append(tflops)
+            sizes.append(8.0 + math.sqrt(max(1.0, float(call_count))))
+            colors.append(color_map.get(bound, "#34c759"))
+            customdata.append([kernel_name, call_count, flops, bytes_value])
+
+        fig.add_trace(
+            go.Scatter(
+                x=intensities,
+                y=achieved_tflops,
+                mode="markers",
+                marker=dict(size=sizes, color=colors, line=dict(width=0.5, color="#111")),
+                customdata=customdata,
+                hovertemplate=(
+                    "Kernel: %{customdata[0]}<br>"
+                    "Calls: %{customdata[1]}<br>"
+                    "Estimated FLOPs: %{customdata[2]:.3e}<br>"
+                    "Estimated Bytes: %{customdata[3]:.3e}<br>"
+                    "Arithmetic Intensity: %{x:.3f}<br>"
+                    "Estimated Throughput: %{y:.3f} TFLOP/s<extra></extra>"
+                ),
+                name="Estimated (fallback)",
+            )
+        )
+
+        min_log = math.log10(max(1e-3, min(intensities) / 2.0))
+        max_log = math.log10(max(1.0, max(intensities) * 2.0))
+        x_line = [10 ** (min_log + (max_log - min_log) * (i / 100.0)) for i in range(101)]
+        mem_line = [bw * x for x in x_line]
+        peak_line = [peak for _ in x_line]
+        fig.add_trace(go.Scatter(x=x_line, y=mem_line, mode="lines", line=dict(color="#ff9f43", width=2), name="Memory Ceiling"))
+        fig.add_trace(go.Scatter(x=x_line, y=peak_line, mode="lines", line=dict(color="#7bd3ff", width=2, dash="dash"), name="Peak Compute"))
+        fig.add_annotation(
+            text="Using estimated fallback: no real FLOP/byte counters were found in this trace.",
+            x=0.01,
+            y=0.98,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            align="left",
+            font=dict(size=11, color="#c9d7ea"),
+            bgcolor="rgba(15,22,34,0.75)",
+            bordercolor="#233043",
+            borderwidth=1,
+        )
+        fig.update_layout(
+            template=EXPORT_TEMPLATE,
+            title="Roofline Scatter ({})".format(preset_name),
+            xaxis_title="Arithmetic Intensity (estimated)",
+            yaxis_title="Throughput (estimated TFLOP/s)",
+            xaxis_type="log",
+            height=520,
+            margin=dict(l=20, r=20, t=60, b=40),
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        )
         return fig
 
-    max_pct = max(1e-6, float(df["pct_total"].max()))
-    intensities: List[float] = []
-    achieved_tflops: List[float] = []
-    bound_labels: List[str] = []
-    sizes: List[float] = []
-    for _, row in df.iterrows():
-        ktype = str(row["kernel_type"])
-        if ktype == "memory":
-            ai = 0.15
-        elif ktype == "nccl":
-            ai = 0.03
-        elif ktype == "compute":
-            ai = 12.0
-        else:
-            ai = 2.0
-        ai *= 1.0 + 0.2 * math.log10(max(1.0, float(row["call_count"])))
-        ceiling = min(peak, ai * bw)
-        util = 0.22 + 0.65 * (float(row["pct_total"]) / max_pct)
-        achieved = max(0.001, min(peak, ceiling * util))
-        bound = "memory-bound" if (ai * bw) < peak else "compute-bound"
-        intensities.append(ai)
-        achieved_tflops.append(achieved)
-        bound_labels.append(bound)
-        sizes.append(8.0 + math.sqrt(max(1.0, float(row["call_count"]))))
+    df = pd.DataFrame(rows)
+    df["total_time_ms"] = pd.to_numeric(df["total_time_ms"], errors="coerce").fillna(0.0)
+    df = df[df["total_time_ms"] >= float(threshold_ms)]
+    if df.empty:
+        df = pd.DataFrame(rows)
+    df = df.sort_values("total_time_ms", ascending=False).head(40)
+
+    intensities = [max(1e-6, _coerce_float(value)) for value in df["arithmetic_intensity"]]
+    achieved_tflops = [max(1e-6, _coerce_float(value)) for value in df["achieved_tflops"]]
+    bound_labels = ["memory-bound" if (ai * bw) < peak else "compute-bound" for ai in intensities]
+    sizes = [8.0 + math.sqrt(max(1.0, _coerce_float(value))) for value in df["call_count"]]
 
     color_map = {"memory-bound": "#ff4d4f", "compute-bound": "#34c759"}
     colors = [color_map.get(label, "#34c759") for label in bound_labels]
@@ -414,11 +613,12 @@ def _build_roofline(report: Mapping[str, Any], threshold_ms: float, preset_name:
             y=achieved_tflops,
             mode="markers",
             marker=dict(size=sizes, color=colors, line=dict(width=0.5, color="#111")),
-            customdata=df[["kernel_name", "call_count", "kernel_type"]],
+            customdata=df[["kernel_name", "call_count", "flops", "bytes"]],
             hovertemplate=(
                 "Kernel: %{customdata[0]}<br>"
                 "Calls: %{customdata[1]}<br>"
-                "Type: %{customdata[2]}<br>"
+                "FLOPs: %{customdata[2]:.3e}<br>"
+                "Bytes: %{customdata[3]:.3e}<br>"
                 "Arithmetic Intensity: %{x:.3f} FLOP/byte<br>"
                 "Throughput: %{y:.3f} TFLOP/s<extra></extra>"
             ),
@@ -556,21 +756,114 @@ def _build_nvlink_line(report: Mapping[str, Any]) -> go.Figure:
     nvlink = ((report.get("metrics") or {}).get("nvlink_during_nccl") or {})
     timeseries = nvlink.get("timeseries") or []
     if not timeseries:
+        rows = list(nvlink.get("rows") or [])
+        if rows:
+            df_rows = pd.DataFrame(rows)
+            df_rows["metric"] = df_rows.apply(
+                lambda row: "{} (src:{})".format(
+                    str(row.get("metric_names") or "metric"),
+                    str(row.get("metric_source_id")),
+                ),
+                axis=1,
+            )
+            fig.add_trace(
+                go.Bar(
+                    x=df_rows["metric"],
+                    y=df_rows["avg_metric_during_nccl"],
+                    name="Avg During NCCL",
+                    marker=dict(color="#34c759"),
+                )
+            )
+            fig.add_trace(
+                go.Bar(
+                    x=df_rows["metric"],
+                    y=df_rows["avg_metric_outside_nccl"],
+                    name="Avg Outside NCCL",
+                    marker=dict(color="#9ea4ad"),
+                )
+            )
+            fig.update_layout(
+                template=EXPORT_TEMPLATE,
+                title="NVLink Summary (No Timeseries Exported)",
+                xaxis_title="Metric Source",
+                yaxis_title="Metric Value (export units)",
+                barmode="group",
+                height=420,
+                margin=dict(l=20, r=20, t=60, b=40),
+                legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+            )
+            return fig
+
         message = "NVLink data not found in trace"
-        notes = nvlink.get("notes") or []
+        notes = list(nvlink.get("notes") or [])
+        instructions = list(nvlink.get("capture_instructions") or [])
         if notes:
             message = str(notes[0])
-        fig.add_annotation(text=message, x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+        if instructions:
+            message = "{}<br><br>{}".format(message, "<br>".join(str(item) for item in instructions[:3]))
+        fig.add_annotation(
+            text=message,
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            align="left",
+            font=dict(color="#d8e6ff", size=12),
+            bordercolor="#2b3a52",
+            borderwidth=1,
+            borderpad=8,
+            bgcolor="rgba(17,24,38,0.72)",
+        )
         fig.update_layout(template=EXPORT_TEMPLATE, title="NVLink Utilization Over Time")
         return fig
 
-    df = pd.DataFrame(timeseries).sort_values("timestamp_ns")
+    df = pd.DataFrame(timeseries)
+    if "timestamp_ns" in df.columns:
+        # Prefer integer nanoseconds to avoid precision loss when large absolute timestamps are used.
+        ns = pd.to_numeric(df["timestamp_ns"], errors="coerce")
+        df = df.assign(_timestamp_ns=ns).dropna(subset=["_timestamp_ns"]).sort_values("_timestamp_ns")
+        if df.empty:
+            fig.add_annotation(text="NVLink data not found in trace", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+            fig.update_layout(template=EXPORT_TEMPLATE, title="NVLink Utilization Over Time")
+            return fig
+        t0_ns = int(df["_timestamp_ns"].min())
+        df["t_ms"] = (df["_timestamp_ns"] - float(t0_ns)) / 1_000_000.0
+    elif "timestamp_ms" in df.columns:
+        ms = pd.to_numeric(df["timestamp_ms"], errors="coerce")
+        df = df.assign(_timestamp_ms=ms).dropna(subset=["_timestamp_ms"]).sort_values("_timestamp_ms")
+        if df.empty:
+            fig.add_annotation(text="NVLink data not found in trace", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+            fig.update_layout(template=EXPORT_TEMPLATE, title="NVLink Utilization Over Time")
+            return fig
+        t0_ms = float(df["_timestamp_ms"].min())
+        df["t_ms"] = df["_timestamp_ms"] - t0_ms
+    else:
+        fig.add_annotation(text="NVLink data not found in trace", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+        fig.update_layout(template=EXPORT_TEMPLATE, title="NVLink Utilization Over Time")
+        return fig
+
+    df["metric_value"] = pd.to_numeric(df.get("metric_value"), errors="coerce")
+    df = df.dropna(subset=["metric_value", "t_ms"])
     if df.empty:
         fig.add_annotation(text="NVLink data not found in trace", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
         fig.update_layout(template=EXPORT_TEMPLATE, title="NVLink Utilization Over Time")
         return fig
-    t0 = float(df["timestamp_ms"].min())
-    df["t_ms"] = df["timestamp_ms"] - t0
+    if "nccl_active" not in df.columns:
+        df["nccl_active"] = False
+    max_t_ms = float(pd.to_numeric(df["t_ms"], errors="coerce").max())
+    if not math.isfinite(max_t_ms) or max_t_ms < 0:
+        max_t_ms = 0.0
+    if max_t_ms < 1.0:
+        # Small windows look like all-zeros when shown in ms; switch to us automatically.
+        df["t_axis"] = pd.to_numeric(df["t_ms"], errors="coerce") * 1000.0
+        xaxis_title = "Time from first NVLink sample (us)"
+        hover_time_fmt = "%{x:.2f} us"
+    else:
+        df["t_axis"] = pd.to_numeric(df["t_ms"], errors="coerce")
+        xaxis_title = "Time from first NVLink sample (ms)"
+        hover_time_fmt = "%{x:.3f} ms"
+    df = df.dropna(subset=["t_axis"])
     if len(df) > 3000:
         step = max(1, len(df) // 3000)
         df = df.iloc[::step, :].reset_index(drop=True)
@@ -579,28 +872,253 @@ def _build_nvlink_line(report: Mapping[str, Any]) -> go.Figure:
     for (metric_source_id, metric_name), g in grouped:
         fig.add_trace(
             go.Scatter(
-                x=g["t_ms"],
+                x=g["t_axis"],
                 y=g["metric_value"],
                 mode="lines",
                 name="{} (src:{})".format(str(metric_name), str(metric_source_id)),
                 customdata=g[["nccl_active"]],
                 hovertemplate=(
-                    "Metric: {}<br>"
-                    "Time: %{x:.3f} ms<br>"
+                    "Metric: %{fullData.name}<br>"
+                    "Time: " + hover_time_fmt + "<br>"
                     "Value: %{y:.3f}<br>"
                     "NCCL active: %{customdata[0]}<extra></extra>"
-                ).format(str(metric_name)),
+                ),
             )
         )
 
     fig.update_layout(
         template=EXPORT_TEMPLATE,
         title="NVLink Utilization Over Time",
-        xaxis_title="Time from first NVLink sample (ms)",
+        xaxis_title=xaxis_title,
         yaxis_title="Metric Value (export units)",
         height=420,
+        margin=dict(l=20, r=260, t=60, b=40),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1.0,
+            xanchor="left",
+            x=1.02,
+            bgcolor="rgba(15,22,34,0.75)",
+            bordercolor="#233043",
+            borderwidth=1,
+            font=dict(size=10),
+        ),
+    )
+    return fig
+
+
+def _build_overlap_summary(report: Mapping[str, Any]) -> go.Figure:
+    fig = go.Figure()
+    overlap = ((report.get("metrics") or {}).get("stream_overlap") or {})
+    rows = list(overlap.get("summary") or [])
+    if not rows:
+        fig.add_annotation(text="No overlap data found.", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+        fig.update_layout(template=EXPORT_TEMPLATE, title="Stream Overlap")
+        return fig
+
+    df = pd.DataFrame(rows)
+    y_vals = pd.to_numeric(df["total_time_ms"], errors="coerce").fillna(0.0)
+    positive = y_vals[y_vals > 0]
+    use_log_axis = False
+    if not positive.empty:
+        min_pos = float(positive.min())
+        max_pos = float(positive.max())
+        if min_pos > 0 and max_pos / min_pos >= 1000.0:
+            use_log_axis = True
+
+    fig.add_trace(
+        go.Bar(
+            x=df["label"],
+            y=y_vals,
+            marker=dict(color=["#4ea5ff", "#34c759", "#ffd166"][: len(df)]),
+            customdata=df[["overlap_pct"]],
+            text=["{:.3f} ms".format(float(v)) for v in y_vals],
+            textposition="outside",
+            hovertemplate=(
+                "Category: %{x}<br>"
+                "Total Active Time: %{y:.3f} ms<br>"
+                "Overlap Share: %{customdata[0]:.1f}%<extra></extra>"
+            ),
+            name="Active Time",
+        )
+    )
+    pairwise = overlap.get("pairwise") or {}
+    fig.add_annotation(
+        text=(
+            "Compute∩NCCL: {:.3f} ms | Compute∩Memcpy: {:.3f} ms | NCCL∩Memcpy: {:.3f} ms | Max concurrent GPU ops: {}"
+        ).format(
+            _coerce_float(pairwise.get("compute_nccl_overlap_ms")),
+            _coerce_float(pairwise.get("compute_memcpy_overlap_ms")),
+            _coerce_float(pairwise.get("nccl_memcpy_overlap_ms")),
+            _coerce_int(pairwise.get("max_concurrent_gpu_ops")),
+        ),
+        x=0.5,
+        y=1.12,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        font=dict(size=11, color="#b8c7da"),
+    )
+    fig.update_layout(
+        template=EXPORT_TEMPLATE,
+        title="Stream Concurrency / Overlap",
+        xaxis_title="Category",
+        yaxis_title="Active Time (ms{})".format(", log scale" if use_log_axis else ""),
+        yaxis_type=("log" if use_log_axis else "linear"),
+        height=420,
+        margin=dict(l=20, r=20, t=80, b=40),
+        showlegend=False,
+    )
+    return fig
+
+
+def _build_launch_latency(report: Mapping[str, Any]) -> go.Figure:
+    fig = go.Figure()
+    launch = ((report.get("metrics") or {}).get("launch_latency") or {})
+    histogram = list(launch.get("histogram") or [])
+    if not histogram:
+        note = "No launch latency data found."
+        notes = launch.get("notes") or []
+        if notes:
+            note = str(notes[0])
+        fig.add_annotation(text=note, x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+        fig.update_layout(template=EXPORT_TEMPLATE, title="Launch Latency")
+        return fig
+
+    df = pd.DataFrame(histogram)
+    centers = (df["bin_start_us"] + df["bin_end_us"]) / 2.0
+    widths = (df["bin_end_us"] - df["bin_start_us"]).clip(lower=1e-6)
+    fig.add_trace(
+        go.Bar(
+            x=centers,
+            y=df["count"],
+            width=widths,
+            marker=dict(color="#7bd3ff"),
+            hovertemplate=(
+                "Latency bin: %{x:.2f} us<br>"
+                "Samples: %{y}<extra></extra>"
+            ),
+            name="Launches",
+        )
+    )
+    summary = launch.get("summary") or {}
+    for label, color in (("p50_us", "#34c759"), ("p95_us", "#ff9f43"), ("p99_us", "#ff4d4f")):
+        value = summary.get(label)
+        if value is None:
+            continue
+        fig.add_vline(x=float(value), line=dict(color=color, dash="dash"))
+    fig.update_layout(
+        template=EXPORT_TEMPLATE,
+        title=(
+            "Launch Latency Distribution "
+            "(p50 {:.2f} us | p95 {:.2f} us | p99 {:.2f} us)"
+        ).format(
+            _coerce_float(summary.get("p50_us")),
+            _coerce_float(summary.get("p95_us")),
+            _coerce_float(summary.get("p99_us")),
+        ),
+        xaxis_title="Launch to Kernel Start (us)",
+        yaxis_title="Count",
+        height=420,
         margin=dict(l=20, r=20, t=60, b=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+        showlegend=False,
+    )
+    return fig
+
+
+def _build_phase_split(report: Mapping[str, Any]) -> go.Figure:
+    fig = go.Figure()
+    phases = ((report.get("metrics") or {}).get("phase_split") or {})
+    rows = list(phases.get("rows") or [])
+    if not rows:
+        note = "No phase split data found."
+        notes = phases.get("notes") or []
+        if notes:
+            note = str(notes[0])
+        fig.add_annotation(text=note, x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+        fig.update_layout(template=EXPORT_TEMPLATE, title="Phase Split")
+        return fig
+
+    df = pd.DataFrame(rows)
+    color_map = {
+        "prefill": "#4ea5ff",
+        "decode": "#34c759",
+        "sampling": "#ff9f43",
+        "unclassified": "#8c8c8c",
+    }
+    colors = [color_map.get(str(name), "#8c8c8c") for name in df["phase"]]
+    fig.add_trace(
+        go.Bar(
+            x=df["phase"],
+            y=df["total_time_ms"],
+            marker=dict(color=colors),
+            customdata=df[["pct_of_total"]],
+            hovertemplate=(
+                "Phase: %{x}<br>"
+                "Time: %{y:.3f} ms<br>"
+                "Share: %{customdata[0]:.1f}%<extra></extra>"
+            ),
+            name="Phase Time",
+        )
+    )
+    fig.update_layout(
+        template=EXPORT_TEMPLATE,
+        title="Phase Split ({})".format(str(phases.get("source") or "unknown")),
+        xaxis_title="Phase",
+        yaxis_title="Time (ms)",
+        height=420,
+        margin=dict(l=20, r=20, t=60, b=40),
+        showlegend=False,
+    )
+    return fig
+
+
+def _build_nccl_skew(report: Mapping[str, Any]) -> go.Figure:
+    fig = go.Figure()
+    rank_rows = list((((report.get("metrics") or {}).get("nccl") or {}).get("rank_rows") or []))
+    if not rank_rows:
+        fig.add_annotation(text="No per-rank NCCL skew found.", x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+        fig.update_layout(template=EXPORT_TEMPLATE, title="Per-rank NCCL Skew")
+        return fig
+
+    df = pd.DataFrame(rank_rows)
+    rows = []
+    for op_name, group in df.groupby("op_name"):
+        top = group.iloc[group["skew_vs_median_pct"].abs().argsort()[::-1]].iloc[0]
+        rows.append(
+            {
+                "op_name": str(op_name),
+                "rank_label": str(top["rank_label"]),
+                "skew_vs_median_pct": float(top["skew_vs_median_pct"]),
+                "total_time_ms": float(top["total_time_ms"]),
+            }
+        )
+    out_df = pd.DataFrame(rows).sort_values("skew_vs_median_pct", key=lambda s: s.abs(), ascending=False).head(16)
+    colors = ["#ff4d4f" if value >= 0 else "#34c759" for value in out_df["skew_vs_median_pct"]]
+    fig.add_trace(
+        go.Bar(
+            x=out_df["op_name"],
+            y=out_df["skew_vs_median_pct"],
+            marker=dict(color=colors),
+            customdata=out_df[["rank_label", "total_time_ms"]],
+            hovertemplate=(
+                "Collective: %{x}<br>"
+                "Straggler: %{customdata[0]}<br>"
+                "Total Time: %{customdata[1]:.3f} ms<br>"
+                "Skew vs median: %{y:.1f}%<extra></extra>"
+            ),
+            name="Skew",
+        )
+    )
+    fig.update_layout(
+        template=EXPORT_TEMPLATE,
+        title="Per-rank NCCL Skew",
+        xaxis_title="Collective",
+        yaxis_title="Skew vs median rank (%)",
+        height=420,
+        margin=dict(l=20, r=20, t=60, b=40),
+        showlegend=False,
     )
     return fig
 
@@ -611,17 +1129,25 @@ def _build_export_figure(
     timeline: go.Figure,
     nccl: go.Figure,
     nvlink: go.Figure,
+    overlap: go.Figure,
+    launch_latency: go.Figure,
+    phase_split: go.Figure,
+    nccl_skew: go.Figure,
 ) -> go.Figure:
     out = make_subplots(
-        rows=3,
+        rows=5,
         cols=2,
-        specs=[[{"colspan": 2}, None], [{}, {}], [{}, {}]],
+        specs=[[{"colspan": 2}, None], [{}, {}], [{}, {}], [{}, {}], [{}, {}]],
         subplot_titles=(
             "Kernel Waterfall",
             "Roofline",
             "Timeline",
             "NCCL Collectives",
             "NVLink Utilization",
+            "Stream Overlap",
+            "Launch Latency",
+            "Phase Split",
+            "NCCL Skew",
         ),
         horizontal_spacing=0.08,
         vertical_spacing=0.12,
@@ -636,7 +1162,15 @@ def _build_export_figure(
         out.add_trace(trace, row=3, col=1)
     for trace in nvlink.data:
         out.add_trace(trace, row=3, col=2)
-    out.update_layout(template=EXPORT_TEMPLATE, height=1600, title="nsys-llm-explainer Dashboard Export", showlegend=True)
+    for trace in overlap.data:
+        out.add_trace(trace, row=4, col=1)
+    for trace in launch_latency.data:
+        out.add_trace(trace, row=4, col=2)
+    for trace in phase_split.data:
+        out.add_trace(trace, row=5, col=1)
+    for trace in nccl_skew.data:
+        out.add_trace(trace, row=5, col=2)
+    out.update_layout(template=EXPORT_TEMPLATE, height=2600, title="nsys-llm-explainer Dashboard Export", showlegend=True)
     return out
 
 
@@ -686,8 +1220,8 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
                     ),
                     html.Div(
                         [
-                            html.H3("Controls"),
-                            html.Label("Load trace/report"),
+                            html.H3("Controls", style={"color": "#f8fbff"}),
+                            html.Label("Load trace/report", style=SIDEBAR_LABEL_STYLE),
                             dcc.Upload(
                                 id="upload-current",
                                 children=html.Div(["Drag and drop .sqlite/.json or click to select"]),
@@ -703,7 +1237,7 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
                             ),
                             html.Div(id="upload-current-status", style={"marginTop": "6px", "fontSize": "12px", "color": "#9fb4cf", "minHeight": "18px"}),
                             html.Br(),
-                            html.Label("Compare with baseline"),
+                            html.Label("Compare with baseline", style=SIDEBAR_LABEL_STYLE),
                             dcc.Upload(
                                 id="upload-baseline",
                                 children=html.Div(["Drag and drop baseline .sqlite/.json"]),
@@ -719,7 +1253,7 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
                             ),
                             html.Div(id="upload-baseline-status", style={"marginTop": "6px", "fontSize": "12px", "color": "#9fb4cf", "minHeight": "18px"}),
                             html.Br(),
-                            html.Label("Hardware preset"),
+                            html.Label("Hardware preset", style=SIDEBAR_LABEL_STYLE),
                             dcc.Dropdown(
                                 id="hardware-preset",
                                 options=[{"label": key, "value": key} for key in HARDWARE_PRESETS.keys()],
@@ -727,13 +1261,22 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
                                 clearable=False,
                             ),
                             html.Br(),
-                            html.Label("Show kernels above N ms total time"),
-                            dcc.Slider(id="kernel-threshold", min=0.0, max=50.0, step=0.5, value=1.0),
+                            html.Label("Show kernels above N ms total time", style=SIDEBAR_LABEL_STYLE),
+                            dcc.Slider(
+                                id="kernel-threshold",
+                                min=0.0,
+                                max=50.0,
+                                step=0.5,
+                                value=1.0,
+                                marks=SLIDER_MARKS,
+                            ),
                             html.Br(),
                             dcc.Checklist(
                                 id="timeline-nccl-toggle",
                                 options=[{"label": "Show NCCL events in timeline", "value": "show"}],
                                 value=["show"],
+                                labelStyle={"color": "#e2e8f0"},
+                                inputStyle={"marginRight": "8px"},
                             ),
                             html.Br(),
                             html.Button(
@@ -793,6 +1336,8 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
                     dcc.Graph(id="kernel-waterfall"),
                     html.Div([dcc.Graph(id="roofline", style={"width": "50%"}), dcc.Graph(id="timeline", style={"width": "50%"})], style={"display": "flex", "gap": "12px", "width": "100%"}),
                     html.Div([dcc.Graph(id="nccl-summary", style={"width": "50%"}), dcc.Graph(id="nvlink-line", style={"width": "50%"})], style={"display": "flex", "gap": "12px", "width": "100%"}),
+                    html.Div([dcc.Graph(id="overlap-summary", style={"width": "50%"}), dcc.Graph(id="launch-latency", style={"width": "50%"})], style={"display": "flex", "gap": "12px", "width": "100%"}),
+                    html.Div([dcc.Graph(id="phase-split", style={"width": "50%"}), dcc.Graph(id="nccl-skew", style={"width": "50%"})], style={"display": "flex", "gap": "12px", "width": "100%"}),
                 ],
                 id="main-content",
                 style=dict(MAIN_STYLE_OPEN),
@@ -870,6 +1415,10 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
         Output("timeline", "figure"),
         Output("nccl-summary", "figure"),
         Output("nvlink-line", "figure"),
+        Output("overlap-summary", "figure"),
+        Output("launch-latency", "figure"),
+        Output("phase-split", "figure"),
+        Output("nccl-skew", "figure"),
         Input("current-report-store", "data"),
         Input("baseline-report-store", "data"),
         Input("hardware-preset", "value"),
@@ -883,29 +1432,76 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
         threshold_ms: float,
         nccl_toggle: Sequence[str],
     ):
-        current = _normalize_report(current_data or {}, source_name="current")
-        baseline = _normalize_report(baseline_data, source_name="baseline") if baseline_data else None
-        show_nccl = "show" in (nccl_toggle or [])
+        def _error_fig(title: str, message: str) -> go.Figure:
+            fig = go.Figure()
+            fig.add_annotation(
+                text=message,
+                x=0.5,
+                y=0.5,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                align="left",
+                font=dict(color="#d8e6ff", size=12),
+                bordercolor="#2b3a52",
+                borderwidth=1,
+                borderpad=8,
+                bgcolor="rgba(17,24,38,0.72)",
+            )
+            fig.update_layout(template=EXPORT_TEMPLATE, title=title, height=420)
+            return fig
 
-        stats = _banner_stats(current, baseline)
-        waterfall = _build_kernel_waterfall(current, baseline, threshold_ms=float(threshold_ms or 0.0))
-        roofline = _build_roofline(current, threshold_ms=float(threshold_ms or 0.0), preset_name=str(hardware_preset or "H100 SXM5"))
-        timeline = _build_timeline(current, include_nccl=bool(show_nccl))
-        nccl = _build_nccl_bar(current, baseline)
-        nvlink = _build_nvlink_line(current)
-        return (
-            stats["trace"],
-            stats["gpu"],
-            stats["cpu"],
-            stats["bottleneck"],
-            stats["framework"],
-            stats["delta"],
-            waterfall,
-            roofline,
-            timeline,
-            nccl,
-            nvlink,
-        )
+        try:
+            current = _normalize_report(current_data or {}, source_name="current")
+            baseline = _normalize_report(baseline_data, source_name="baseline") if baseline_data else None
+            show_nccl = "show" in (nccl_toggle or [])
+
+            stats = _banner_stats(current, baseline)
+            waterfall = _build_kernel_waterfall(current, baseline, threshold_ms=float(threshold_ms or 0.0))
+            roofline = _build_roofline(current, threshold_ms=float(threshold_ms or 0.0), preset_name=str(hardware_preset or "H100 SXM5"))
+            timeline = _build_timeline(current, include_nccl=bool(show_nccl))
+            nccl = _build_nccl_bar(current, baseline)
+            nvlink = _build_nvlink_line(current)
+            overlap = _build_overlap_summary(current)
+            launch_latency = _build_launch_latency(current)
+            phases = _build_phase_split(current)
+            nccl_skew = _build_nccl_skew(current)
+            return (
+                stats["trace"],
+                stats["gpu"],
+                stats["cpu"],
+                stats["bottleneck"],
+                stats["framework"],
+                stats["delta"],
+                waterfall,
+                roofline,
+                timeline,
+                nccl,
+                nvlink,
+                overlap,
+                launch_latency,
+                phases,
+                nccl_skew,
+            )
+        except Exception as exc:
+            message = "Dashboard render error: {}".format(str(exc))
+            return (
+                "load_error",
+                "-",
+                "-",
+                message,
+                "unknown",
+                "No baseline loaded",
+                _error_fig("Kernel Waterfall", message),
+                _error_fig("Roofline Scatter", message),
+                _error_fig("Timeline", message),
+                _error_fig("NCCL Collectives", message),
+                _error_fig("NVLink Utilization Over Time", message),
+                _error_fig("Stream Overlap", message),
+                _error_fig("Launch Latency", message),
+                _error_fig("Phase Split", message),
+                _error_fig("NCCL Skew", message),
+            )
 
     @app.callback(
         Output("export-status", "children"),
@@ -935,7 +1531,21 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
         timeline = _build_timeline(current, include_nccl=bool(show_nccl))
         nccl = _build_nccl_bar(current, baseline)
         nvlink = _build_nvlink_line(current)
-        export_fig = _build_export_figure(waterfall, roofline, timeline, nccl, nvlink)
+        overlap = _build_overlap_summary(current)
+        launch_latency = _build_launch_latency(current)
+        phases = _build_phase_split(current)
+        nccl_skew = _build_nccl_skew(current)
+        export_fig = _build_export_figure(
+            waterfall,
+            roofline,
+            timeline,
+            nccl,
+            nvlink,
+            overlap,
+            launch_latency,
+            phases,
+            nccl_skew,
+        )
 
         export_path = Path.cwd() / "dashboard_export_{}.html".format(time.strftime("%Y%m%d_%H%M%S"))
         pio.write_html(export_fig, file=str(export_path), include_plotlyjs="cdn", full_html=True, auto_open=False)

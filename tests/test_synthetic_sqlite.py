@@ -9,6 +9,7 @@ from pathlib import Path
 from nsys_llm_explainer.cli import main as cli_main
 from nsys_llm_explainer.queries import (
     TraceDB,
+    copy_engine_events,
     correlate_nvlink_with_nccl,
     detect_launch_storm,
     detect_nccl_ops,
@@ -17,7 +18,11 @@ from nsys_llm_explainer.queries import (
     find_sync_events,
     get_top_kernels,
     kernels_by_pid,
+    launch_latency_distribution,
     nvtx_breakdown,
+    phase_split,
+    roofline_metrics,
+    stream_overlap_summary,
     timeline_events,
 )
 
@@ -43,12 +48,30 @@ def _build_trace_with_nccl_and_barriers(db_path: Path, *, include_gpu_metrics: b
                 contextId INT NOT NULL,
                 streamId INT NOT NULL,
                 globalPid INT,
+                correlationId INT,
                 demangledName INT NOT NULL
             );
             CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME(
                 start INT NOT NULL,
                 end INT NOT NULL,
                 nameId INT NOT NULL,
+                globalTid INT,
+                correlationId INT
+            );
+            CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY(
+                start INT NOT NULL,
+                end INT NOT NULL,
+                deviceId INT NOT NULL,
+                streamId INT NOT NULL,
+                bytes INT,
+                copyKind INT
+            );
+            CREATE TABLE NVTX_EVENTS(
+                start INT NOT NULL,
+                end INT NOT NULL,
+                eventType INT,
+                text TEXT,
+                textId INT,
                 globalTid INT
             );
             """
@@ -63,28 +86,47 @@ def _build_trace_with_nccl_and_barriers(db_path: Path, *, include_gpu_metrics: b
                 (11, "cudaMemcpy"),
                 (12, "cudaStreamSynchronize"),
                 (13, "cudaDeviceSynchronize"),
+                (14, "decodeKernel"),
             ],
         )
         pid1 = 111
         pid2 = 222
         conn.executemany(
-            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL(start,end,deviceId,contextId,streamId,globalPid,demangledName) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL(start,end,deviceId,contextId,streamId,globalPid,correlationId,demangledName) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (0, 1_000_000, 0, 0, 0, _mk_global_pid(pid1), 1),
-                (1_000_000, 3_000_000, 0, 0, 0, _mk_global_pid(pid1), 2),
-                (1_500_000, 2_500_000, 0, 0, 0, _mk_global_pid(pid1), 1),
-                (4_000_000, 5_500_000, 0, 0, 0, _mk_global_pid(pid2), 3),
-                (4_200_000, 4_800_000, 0, 0, 0, _mk_global_pid(pid2), 1),
+                (0, 1_000_000, 0, 0, 0, _mk_global_pid(pid1), 101, 1),
+                (1_000_000, 3_000_000, 0, 0, 0, _mk_global_pid(pid1), 102, 2),
+                (1_500_000, 2_500_000, 0, 0, 1, _mk_global_pid(pid1), 103, 1),
+                (4_000_000, 5_500_000, 0, 0, 0, _mk_global_pid(pid2), 201, 3),
+                (4_200_000, 4_800_000, 0, 0, 1, _mk_global_pid(pid2), 202, 14),
             ],
         )
         conn.executemany(
-            "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME(start,end,nameId,globalTid) VALUES(?,?,?,?)",
+            "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME(start,end,nameId,globalTid,correlationId) VALUES(?,?,?,?,?)",
             [
-                (0, 10_000, 10, _mk_global_tid(pid1, 7)),
-                (210_000, 220_000, 10, _mk_global_tid(pid1, 7)),
-                (3_200_000, 3_800_000, 11, _mk_global_tid(pid1, 7)),
-                (5_000_000, 5_800_000, 12, _mk_global_tid(pid1, 7)),
-                (2_000_000, 2_700_000, 13, _mk_global_tid(pid2, 9)),
+                (0, 10_000, 10, _mk_global_tid(pid1, 7), 101),
+                (210_000, 220_000, 10, _mk_global_tid(pid1, 7), 102),
+                (1_200_000, 1_215_000, 10, _mk_global_tid(pid1, 7), 103),
+                (3_200_000, 3_800_000, 11, _mk_global_tid(pid1, 7), None),
+                (3_950_000, 3_970_000, 10, _mk_global_tid(pid2, 9), 201),
+                (4_150_000, 4_170_000, 10, _mk_global_tid(pid2, 9), 202),
+                (5_000_000, 5_800_000, 12, _mk_global_tid(pid1, 7), None),
+                (2_000_000, 2_700_000, 13, _mk_global_tid(pid2, 9), None),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_MEMCPY(start,end,deviceId,streamId,bytes,copyKind) VALUES(?,?,?,?,?,?)",
+            [
+                (3_100_000, 3_600_000, 0, 7, 4096, 1),
+                (4_850_000, 5_150_000, 0, 7, 8192, 2),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO NVTX_EVENTS(start,end,eventType,text,textId,globalTid) VALUES(?,?,?,?,?,?)",
+            [
+                (0, 3_100_000, 59, "prefill_stage", None, _mk_global_tid(pid1, 7)),
+                (3_900_000, 5_600_000, 59, "decode_stage", None, _mk_global_tid(pid2, 9)),
+                (5_600_000, 6_200_000, 59, "sampling_stage", None, _mk_global_tid(pid2, 9)),
             ],
         )
         if include_gpu_metrics:
@@ -108,6 +150,8 @@ def _build_trace_with_nccl_and_barriers(db_path: Path, *, include_gpu_metrics: b
                 [
                     (1, "NVLink bytes transmitted", 0),
                     (2, "NVLink bytes received", 0),
+                    (3, "Tensor FLOPs", 0),
+                    (4, "DRAM bytes", 0),
                 ],
             )
             conn.executemany(
@@ -125,6 +169,16 @@ def _build_trace_with_nccl_and_barriers(db_path: Path, *, include_gpu_metrics: b
                     (4_500_000, 2, 0, 82.0),
                     (6_000_000, 1, 0, 8.0),
                     (6_000_000, 2, 0, 7.0),
+                    (500_000, 3, 0, 1.2e12),
+                    (500_000, 4, 0, 2.4e11),
+                    (1_500_000, 3, 0, 2.0e12),
+                    (1_500_000, 4, 0, 3.0e11),
+                    (2_500_000, 3, 0, 1.7e12),
+                    (2_500_000, 4, 0, 2.2e11),
+                    (4_500_000, 3, 0, 1.5e12),
+                    (4_500_000, 4, 0, 2.8e11),
+                    (5_500_000, 3, 0, 7.0e11),
+                    (5_500_000, 4, 0, 1.5e11),
                 ],
             )
         conn.commit()
@@ -374,6 +428,9 @@ class TestSyntheticSQLiteFixtures(unittest.TestCase):
                 nvk = outputs.report["metrics"]["nvtx_kernel_time"]
                 self.assertIn("coverage_fraction", nvk)
                 self.assertIn("coverage_pct", nvk)
+                timeline = outputs.report["metrics"]["timeline"]
+                self.assertTrue(timeline["present"])
+                self.assertTrue(timeline["events"])
 
                 by_pid = outputs.report["metrics"]["by_pid"]
                 self.assertTrue(by_pid["kernels"]["present"])
@@ -390,6 +447,15 @@ class TestSyntheticSQLiteFixtures(unittest.TestCase):
                 self.assertTrue((out_dir / "tables" / "kernels_by_pid.csv").exists())
                 self.assertTrue((out_dir / "tables" / "sync_by_pid.csv").exists())
                 self.assertTrue((out_dir / "tables" / "nvtx_by_pid.csv").exists())
+                self.assertTrue((out_dir / "tables" / "timeline_events.csv").exists())
+                self.assertTrue((out_dir / "tables" / "launch_latency_rows.csv").exists())
+                self.assertTrue((out_dir / "tables" / "phase_split.csv").exists())
+                self.assertTrue((out_dir / "tables" / "roofline.csv").exists())
+
+                report_json = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+                self.assertTrue(report_json["metrics"]["timeline"]["events"])
+                self.assertTrue(report_json["metrics"]["launch_latency"]["summary"])
+                self.assertTrue(report_json["metrics"]["phase_split"]["rows"])
             finally:
                 db.close()
 
@@ -570,6 +636,29 @@ class TestSyntheticSQLiteFixtures(unittest.TestCase):
                 timeline = timeline_events(db, limit=20, include_nccl=True)
                 self.assertTrue(timeline["present"])
                 self.assertTrue(timeline["events"])
+
+                copies = copy_engine_events(db, limit=20)
+                self.assertTrue(copies["present"])
+                self.assertTrue(copies["events"])
+
+                launch = launch_latency_distribution(db, limit=20)
+                self.assertTrue(launch["present"])
+                self.assertGreater(float(launch["summary"]["p95_us"]), 0.0)
+
+                overlap = stream_overlap_summary(db)
+                self.assertTrue(overlap["present"])
+                self.assertGreaterEqual(int(overlap["pairwise"]["max_concurrent_gpu_ops"]), 1)
+
+                phases = phase_split(db, limit=20)
+                self.assertTrue(phases["present"])
+                phase_names = [str(row["phase"]) for row in phases["rows"]]
+                self.assertIn("prefill", phase_names)
+                self.assertIn("decode", phase_names)
+
+                roofline = roofline_metrics(db, limit=20)
+                self.assertTrue(roofline["present"])
+                self.assertTrue(roofline["rows"])
+                self.assertTrue(all(float(row["arithmetic_intensity"]) > 0.0 for row in roofline["rows"]))
             finally:
                 db.close()
 
@@ -595,6 +684,9 @@ class TestSyntheticSQLiteFixtures(unittest.TestCase):
             self.assertIn("NVLink counters not found", report_md)
             self.assertIn("## Top CPU↔GPU barriers", report_md)
             self.assertIn("## Per-process breakdown", report_md)
+
+            report_json = json.loads((out_dir / "report.json").read_text(encoding="utf-8"))
+            self.assertTrue(report_json["metrics"]["timeline"]["events"])
 
 
 if __name__ == "__main__":

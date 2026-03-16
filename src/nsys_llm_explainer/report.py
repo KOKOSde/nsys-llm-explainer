@@ -13,6 +13,7 @@ from .heuristics import (
 )
 from .queries import (
     TraceDB,
+    copy_engine_events,
     correlate_nvlink_with_nccl,
     detect_launch_storm,
     detect_nccl_ops,
@@ -21,12 +22,17 @@ from .queries import (
     find_sync_events,
     get_top_kernels,
     kernels_by_pid,
+    launch_latency_distribution,
     nvtx_breakdown,
     nvtx_by_pid,
     nvtx_kernel_time_by_range,
+    phase_split,
     per_pid_breakdown,
+    roofline_metrics,
     schema_discovery,
+    stream_overlap_summary,
     sync_by_pid,
+    timeline_events,
     write_csv,
     write_json,
 )
@@ -70,6 +76,35 @@ def _md_table(rows: Sequence[Mapping[str, Any]], cols: Sequence[str]) -> str:
     return "\n".join([header, sep] + body)
 
 
+def _downsample_nvlink_timeseries(rows: Sequence[Mapping[str, Any]], max_points: int = 20000) -> List[Dict[str, Any]]:
+    values = [dict(row) for row in rows]
+    if max_points <= 0 or len(values) <= max_points:
+        return values
+
+    by_metric: Dict[str, List[Dict[str, Any]]] = {}
+    for row in values:
+        metric = str(row.get("metric_name") or "__unknown__")
+        by_metric.setdefault(metric, []).append(row)
+
+    metric_count = max(1, len(by_metric))
+    per_metric_cap = max(1, max_points // metric_count)
+    sampled: List[Dict[str, Any]] = []
+    for _, series in sorted(by_metric.items(), key=lambda item: item[0]):
+        if len(series) <= per_metric_cap:
+            sampled.extend(series)
+            continue
+        step = max(1, int(len(series) / float(per_metric_cap)))
+        chosen = series[::step][:per_metric_cap]
+        if chosen and chosen[-1] is not series[-1]:
+            chosen[-1] = series[-1]
+        sampled.extend(chosen)
+
+    sampled.sort(key=lambda row: (float(row.get("timestamp_ns") or 0.0), str(row.get("metric_name") or "")))
+    if len(sampled) > max_points:
+        sampled = sampled[:max_points]
+    return sampled
+
+
 @dataclass(frozen=True)
 class AnalysisOutputs:
     report: Mapping[str, Any]
@@ -97,6 +132,24 @@ def analyze(
     nvtx = nvtx_breakdown(trace_db)
     nccl = detect_nccl_ops(trace_db)
     nvlink_during_nccl = correlate_nvlink_with_nccl(trace_db, nccl)
+    nvlink_timeseries = list(nvlink_during_nccl.get("timeseries") or [])
+    if len(nvlink_timeseries) > 20000:
+        sampled = _downsample_nvlink_timeseries(nvlink_timeseries, max_points=20000)
+        nvlink_during_nccl = dict(nvlink_during_nccl)
+        nvlink_during_nccl["timeseries"] = sampled
+        nvlink_notes = list(nvlink_during_nccl.get("notes") or [])
+        nvlink_notes.append(
+            "Downsampled NVLink timeseries from {} to {} points for report size/readability.".format(
+                len(nvlink_timeseries), len(sampled)
+            )
+        )
+        nvlink_during_nccl["notes"] = nvlink_notes
+    timeline = timeline_events(trace_db, limit=50, include_nccl=True)
+    copy_events = copy_engine_events(trace_db, limit=100)
+    launch_latency = launch_latency_distribution(trace_db, limit=100)
+    stream_overlap = stream_overlap_summary(trace_db)
+    phase_breakdown = phase_split(trace_db, limit=100)
+    roofline = roofline_metrics(trace_db, limit=40)
 
     if compute_nvtx_kernel_map:
         nvtx_kernel = nvtx_kernel_time_by_range(trace_db, limit=50)
@@ -132,8 +185,8 @@ def analyze(
                 byp.setdefault(pid, []).append(r)
             nvtx_kernel_phases_by_pid = []
             for pid, ranges in sorted(byp.items(), key=lambda kv: kv[0]):
-                phases = nvtx_kernel_phase_breakdown({"present": True, "ranges": ranges}, phase_map=phase_map)
-                nvtx_kernel_phases_by_pid.append({"pid": pid, "phases": phases.get("phases") or []})
+                pid_phases = nvtx_kernel_phase_breakdown({"present": True, "ranges": ranges}, phase_map=phase_map)
+                nvtx_kernel_phases_by_pid.append({"pid": pid, "phases": pid_phases.get("phases") or []})
 
     warnings: List[str] = []
     # Timestamp units: we interpret `start/end` as nanoseconds (Nsight Systems CUPTI exports),
@@ -270,6 +323,12 @@ def analyze(
             "gpu_idle": gpu_idle,
             "nccl": nccl,
             "nvlink_during_nccl": nvlink_during_nccl,
+            "timeline": timeline,
+            "copy_engine": copy_events,
+            "launch_latency": launch_latency,
+            "stream_overlap": stream_overlap,
+            "phase_split": phase_breakdown,
+            "roofline": roofline,
             "nvtx": nvtx,
             "nvtx_phases": nvtx_phases,
             "nvtx_kernel_time": nvtx_kernel,
@@ -303,8 +362,17 @@ def write_artifacts(outputs: AnalysisOutputs, out_dir: Path) -> None:
     write_csv(m["top_kernels"].get("kernels") or [], tables_dir / "kernels.csv")
     write_csv(m["barriers"].get("barriers") or [], tables_dir / "barriers.csv")
     write_csv(m["nccl"].get("ops") or [], tables_dir / "nccl_ops.csv")
+    write_csv(m["nccl"].get("rank_rows") or [], tables_dir / "nccl_rank_skew.csv")
     write_csv(m["nccl"].get("pids") or [], tables_dir / "nccl_by_pid.csv")
     write_csv(m["nvlink_during_nccl"].get("rows") or [], tables_dir / "nvlink_during_nccl.csv")
+    write_csv(m["nvlink_during_nccl"].get("timeseries") or [], tables_dir / "nvlink_timeseries.csv")
+    write_csv(m["timeline"].get("events") or [], tables_dir / "timeline_events.csv")
+    write_csv(m["copy_engine"].get("events") or [], tables_dir / "copy_engine_events.csv")
+    write_csv(m["launch_latency"].get("rows") or [], tables_dir / "launch_latency_rows.csv")
+    write_csv(m["launch_latency"].get("histogram") or [], tables_dir / "launch_latency_histogram.csv")
+    write_csv(m["stream_overlap"].get("summary") or [], tables_dir / "stream_overlap.csv")
+    write_csv(m["phase_split"].get("rows") or [], tables_dir / "phase_split.csv")
+    write_csv(m["roofline"].get("rows") or [], tables_dir / "roofline.csv")
     write_csv(m["gpu_idle"].get("gaps") or [], tables_dir / "gpu_idle_gaps.csv")
 
     if m.get("nvtx") and (m["nvtx"].get("ranges") or []):

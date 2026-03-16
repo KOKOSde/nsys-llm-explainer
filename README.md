@@ -5,6 +5,8 @@
 
 ![nsys-llm-explainer hero diagram](docs/hero.svg)
 
+Current release: **v0.2.0**
+
 ### Why this exists
 
 Nsight Systems SQLite exports are powerful but tedious to inspect by hand when you need an answer quickly.
@@ -77,13 +79,34 @@ You can also launch from exported JSON:
 python3 -m nsys_llm_explainer.dashboard --db artifacts/run_YYYYMMDD_HHMMSS/report.json
 ```
 
-Screenshot placeholder:
+The dashboard provides SQLite-backed trace visualization with a kernel waterfall, roofline analysis, NCCL overlap summaries, NVLink correlation, and historical comparison mode (current vs baseline) in one scrollable dark-theme view.
 
-```text
-[replace with GIF demo]
-```
+Dashboard highlights:
 
-The dashboard provides SQLite-backed trace visualization with a kernel waterfall, roofline analysis, NCCL overlap summaries, NVLink correlation, and historical comparison mode (current vs baseline) in one scrollable dark-theme view. It was built using Claude Code / Cursor as part of an agentic profiling workflow.
+- Drag-and-drop current and baseline `.sqlite`/`.json` files for side-by-side trend checks.
+- KPI banner for total GPU time, total CPU time, detected bottleneck, framework hints, and baseline delta.
+- Kernel waterfall with threshold filtering and baseline overlays.
+- Roofline scatter + top-50 timeline (with NCCL visibility toggle).
+- NCCL collective summaries with overlap, NVLink utilization timeline, stream-overlap summary, and launch-latency histogram.
+- Phase split and per-rank NCCL skew views for multi-rank runs.
+- One-click static export to `dashboard_export_YYYYMMDD_HHMMSS.html`.
+
+### Dashboard screenshots
+
+![NCCL collectives and NVLink utilization](docs/screenshots/NCCL_Collectives_And_NVLINK_utilizastion.png)
+This view shows collective-time distribution and NVLink activity together, so you can quickly validate whether communication cost and fabric usage match each other.
+
+![Phase split and per-rank NCCL skew](docs/screenshots/phase_split_and_perrank_NCCL.png)
+This view helps identify which high-level phase dominates runtime and whether one rank is lagging the others during NCCL operations.
+
+![Roofline scatter and timeline top-50 kernels](docs/screenshots/roofline_scatter_and_Timline_top50.png)
+This view is useful for checking whether dominant kernels are compute-bound or bandwidth-bound and for validating where the heaviest kernels sit in time.
+
+![Stream concurrency and launch latency](docs/screenshots/stream_concurrency_and_lancy_latency.png)
+This view is used to diagnose overlap quality and CPU launch overhead, including tail latency behavior for kernel launches.
+
+![Kernel waterfall](docs/screenshots/waterfall.png)
+This view is the fastest way to inspect execution ordering and spot long kernels, bursty launches, and synchronization boundaries across streams.
 
 ### What the report includes
 
@@ -93,10 +116,19 @@ The generated output directory contains:
 - `tables/kernels.csv`
 - `tables/barriers.csv`
 - `tables/nccl_ops.csv`
+- `tables/nccl_rank_skew.csv`
 - `tables/nccl_by_pid.csv`
 - `tables/nvlink_during_nccl.csv`
+- `tables/nvlink_timeseries.csv`
+- `tables/timeline_events.csv`
+- `tables/copy_engine_events.csv`
+- `tables/launch_latency_rows.csv`
+- `tables/launch_latency_histogram.csv`
+- `tables/stream_overlap.csv`
+- `tables/phase_split.csv`
+- `tables/roofline.csv`
 - `tables/gpu_idle_gaps.csv`
-- `tables/kernels_by_pid.csv`, `tables/sync_by_pid.csv`, `tables/nvtx_by_pid.csv`
+- `tables/kernels_by_pid.csv`, `tables/sync_by_pid.csv`, `tables/nvtx_by_pid.csv`, `tables/nvtx_ranges.csv`
 
 New report sections:
 
@@ -105,6 +137,15 @@ New report sections:
 - `NVLink during NCCL`
 - `Top CPU↔GPU barriers`
 - `Per-process breakdown`
+
+Additional dashboard-ready metrics (stored in `report.json` + tables) include:
+
+- Timeline top events
+- Copy engine activity
+- Launch latency distribution
+- Stream overlap summary
+- Phase split
+- Roofline metrics
 
 ### Capture recipes
 
