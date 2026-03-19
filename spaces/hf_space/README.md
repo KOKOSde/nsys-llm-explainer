@@ -42,7 +42,7 @@ If you want a reproducible Space, keep the Git dependency pinned to a release ta
 If you want the Space to follow the latest `main` branch instead, change:
 
 ```txt
-git+https://github.com/KOKOSde/nsys-llm-explainer.git@v0.3.2
+git+https://github.com/KOKOSde/nsys-llm-explainer.git@v0.3.3
 ```
 
 to:

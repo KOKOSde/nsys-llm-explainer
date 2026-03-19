@@ -38,7 +38,7 @@ python3 deploy/aws/provision_ec2.py \
   --instance-type t3.small \
   --name-prefix nsys-llm-api \
   --service-port 7860 \
-  --repo-ref v0.3.1 \
+  --repo-ref v0.3.3 \
   --output-json deploy/aws/ec2_deploy_output.json
 ```
 

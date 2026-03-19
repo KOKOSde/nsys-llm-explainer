@@ -12,6 +12,8 @@ python -m nsys_llm_explainer.api
 
 - `Dockerfile.api`: lean container image for API/service deployments.
 - `docker-compose.api.yml`: local production-like compose stack with volume mounts.
+- `any_gpu/README.md`: provider-agnostic VM install path (Vast, EC2, personal GPU, etc.).
+- `cloudflare/README.md`: DNS automation for custom domains.
 - `aws/README.md`: AWS ECS/Fargate and EC2 quickstart.
 - `gcp/README.md`: Google Cloud Run quickstart.
 

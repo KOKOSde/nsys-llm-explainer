@@ -1,2 +1,2 @@
 pandas>=1.5.0
-git+https://github.com/KOKOSde/nsys-llm-explainer.git@v0.3.2
+git+https://github.com/KOKOSde/nsys-llm-explainer.git@v0.3.3

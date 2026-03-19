@@ -5,7 +5,7 @@
 
 ![nsys-llm-explainer hero diagram](docs/hero.svg)
 
-Current release: **v0.3.2**
+Current release: **v0.3.3**
 
 ### Why this exists
 
@@ -163,6 +163,8 @@ Container and cloud quickstarts:
 - [deploy/README.md](deploy/README.md)
 - [deploy/Dockerfile.api](deploy/Dockerfile.api)
 - [deploy/docker-compose.api.yml](deploy/docker-compose.api.yml)
+- [deploy/any_gpu/README.md](deploy/any_gpu/README.md)
+- [deploy/cloudflare/README.md](deploy/cloudflare/README.md)
 - [deploy/aws/README.md](deploy/aws/README.md)
 - [deploy/gcp/README.md](deploy/gcp/README.md)
 

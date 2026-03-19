@@ -1,5 +1,16 @@
 ## Changelog
 
+### v0.3.3
+
+- **Provider-agnostic deploy path**:
+  - Added `deploy/any_gpu/install_service.sh` to install the API as a systemd service on generic GPU hosts (Vast, EC2, personal servers).
+  - Added `deploy/any_gpu/README.md` with host-agnostic setup, auth, upgrade, and uninstall steps.
+- **Cloudflare DNS automation**:
+  - Added `deploy/cloudflare/upsert_dns_record.py` to upsert A/CNAME records using `CF_API_TOKEN` from environment.
+  - Added `deploy/cloudflare/README.md` with scoped-token setup and usage examples.
+- **Docs updates**:
+  - Updated deploy index and root README deploy-kit links to include `any_gpu` and `cloudflare` guides.
+
 ### v0.3.2
 
 - **API authentication middleware**:
