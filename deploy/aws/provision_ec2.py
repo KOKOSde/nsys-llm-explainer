@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Provision a public EC2 instance and bootstrap nsys-llm-api service."""
 
-from __future__ import annotations
-
 import argparse
 import datetime as dt
 import json
@@ -15,24 +13,28 @@ import boto3
 from botocore.exceptions import ClientError
 
 
-SERVICE_PORT = 7860
+DEFAULT_SERVICE_PORT = 7860
+DEFAULT_REPO_URL = "https://github.com/KOKOSde/nsys-llm-explainer.git"
+DEFAULT_REPO_REF = "v0.3.0"
 
 
-USER_DATA = """#!/bin/bash
+USER_DATA_TEMPLATE = """#!/bin/bash
 set -euxo pipefail
 
 dnf install -y python3 python3-pip python3-setuptools git
 
-python3 -m pip install --upgrade pip || true
-python3 -m pip install --break-system-packages fastapi uvicorn python-multipart pandas plotly dash requests
-git clone --depth 1 --branch v0.3.0 https://github.com/KOKOSde/nsys-llm-explainer.git /opt/nsys-llm-explainer
+rm -rf /opt/nsys-llm-explainer /opt/nsys-venv
+git clone --depth 1 --branch {repo_ref} {repo_url} /opt/nsys-llm-explainer
+
+python3 -m venv /opt/nsys-venv
+/opt/nsys-venv/bin/python -m pip install --upgrade pip setuptools wheel
+/opt/nsys-venv/bin/python -m pip install "/opt/nsys-llm-explainer[api]"
 
 cat >/usr/local/bin/start_nsys_api.sh <<'SCRIPT'
 #!/bin/bash
 set -euo pipefail
 cd /opt/nsys-llm-explainer
-export PYTHONPATH=/opt/nsys-llm-explainer/src
-exec python3 -m nsys_llm_explainer.api --host 0.0.0.0 --port 7860
+exec /opt/nsys-venv/bin/python -m nsys_llm_explainer.api --host 0.0.0.0 --port {service_port}
 SCRIPT
 chmod +x /usr/local/bin/start_nsys_api.sh
 
@@ -45,7 +47,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-Environment=PORT=7860
+Environment=PORT={service_port}
 ExecStart=/usr/local/bin/start_nsys_api.sh
 Restart=always
 RestartSec=3
@@ -59,11 +61,22 @@ systemctl enable --now nsys-llm-api
 """
 
 
+def _render_user_data(*, repo_url: str, repo_ref: str, service_port: int) -> str:
+    return USER_DATA_TEMPLATE.format(
+        repo_url=str(repo_url),
+        repo_ref=str(repo_ref),
+        service_port=int(service_port),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Provision EC2 for nsys-llm-explainer API.")
     parser.add_argument("--region", default="us-east-1", help="AWS region.")
     parser.add_argument("--instance-type", default="t3.small", help="EC2 instance type.")
+    parser.add_argument("--service-port", type=int, default=DEFAULT_SERVICE_PORT, help="API service port.")
     parser.add_argument("--name-prefix", default="nsys-llm-api", help="Name tag prefix.")
+    parser.add_argument("--repo-url", default=DEFAULT_REPO_URL, help="Git URL to clone on the instance.")
+    parser.add_argument("--repo-ref", default=DEFAULT_REPO_REF, help="Git branch/tag/sha to deploy.")
     parser.add_argument("--allow-ssh", action="store_true", help="Allow inbound SSH from 0.0.0.0/0.")
     parser.add_argument("--create-key-pair", action="store_true", help="Create a new key pair and write PEM locally.")
     parser.add_argument(
@@ -108,7 +121,14 @@ def _default_vpc_and_subnet(ec2_client: Any) -> Dict[str, str]:
     return {"vpc_id": vpc_id, "subnet_id": subnet_id}
 
 
-def _ensure_security_group(ec2_client: Any, *, vpc_id: str, group_name: str, allow_ssh: bool) -> str:
+def _ensure_security_group(
+    ec2_client: Any,
+    *,
+    vpc_id: str,
+    group_name: str,
+    allow_ssh: bool,
+    service_port: int,
+) -> str:
     existing = ec2_client.describe_security_groups(
         Filters=[
             {"Name": "group-name", "Values": [group_name]},
@@ -129,8 +149,8 @@ def _ensure_security_group(ec2_client: Any, *, vpc_id: str, group_name: str, all
     permissions = [
         {
             "IpProtocol": "tcp",
-            "FromPort": SERVICE_PORT,
-            "ToPort": SERVICE_PORT,
+            "FromPort": int(service_port),
+            "ToPort": int(service_port),
             "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Public API"}],
         }
     ]
@@ -169,6 +189,9 @@ def _maybe_create_key_pair(ec2_client: Any, *, name: str, out_dir: Path) -> Opti
 def main() -> int:
     args = _parser().parse_args()
     region = str(args.region)
+    service_port = int(args.service_port)
+    if service_port < 1 or service_port > 65535:
+        raise SystemExit("--service-port must be in range 1..65535")
 
     session = boto3.Session(region_name=region)
     ec2_client = session.client("ec2")
@@ -187,6 +210,7 @@ def main() -> int:
         vpc_id=network["vpc_id"],
         group_name=group_name,
         allow_ssh=bool(args.allow_ssh),
+        service_port=service_port,
     )
 
     key_pair_path = None
@@ -208,7 +232,11 @@ def main() -> int:
                 "Groups": [sg_id],
             }
         ],
-        "UserData": USER_DATA,
+        "UserData": _render_user_data(
+            repo_url=str(args.repo_url),
+            repo_ref=str(args.repo_ref),
+            service_port=service_port,
+        ),
     }
     if key_name_for_instance:
         run_args["KeyName"] = key_name_for_instance
@@ -240,7 +268,7 @@ def main() -> int:
         "security_group_name": group_name,
         "public_ip": public_ip,
         "public_dns": public_dns,
-        "api_url": "http://{}:{}/healthz".format(public_ip, SERVICE_PORT) if public_ip else None,
+        "api_url": "http://{}:{}/healthz".format(public_ip, service_port) if public_ip else None,
         "key_pair_name": key_name_for_instance,
         "key_pair_path": str(key_pair_path) if key_pair_path else None,
         "created_at_utc": dt.datetime.utcnow().isoformat() + "Z",
