@@ -10,3 +10,5 @@ venv/
 *.nsys-rep
 artifacts/
 logs/
+deploy/aws/ec2_deploy_output*.json
+deploy/aws/*.pem

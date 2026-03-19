@@ -22,6 +22,37 @@ docker run --rm -p 7860:7860 \
   nsys-llm-explainer:api
 ```
 
+## Automated EC2 provisioning
+
+This repo now includes:
+
+- `deploy/aws/provision_ec2.py`
+
+It launches an EC2 instance, creates/uses a security group, bootstraps `nsys-llm-api` via systemd, and writes deployment output JSON.
+
+Example:
+
+```bash
+python3 deploy/aws/provision_ec2.py \
+  --region us-east-1 \
+  --instance-type t3.small \
+  --name-prefix nsys-llm-api \
+  --output-json deploy/aws/ec2_deploy_output.json
+```
+
+Optional:
+
+- `--allow-ssh` to open port 22
+- `--create-key-pair` to create and save a PEM key under `deploy/aws/`
+
+Minimum IAM actions typically required:
+
+- `ec2:DescribeVpcs`, `ec2:DescribeSubnets`, `ec2:DescribeSecurityGroups`
+- `ec2:CreateSecurityGroup`, `ec2:AuthorizeSecurityGroupIngress`
+- `ec2:RunInstances`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus`
+- Optional: `ec2:CreateKeyPair`, `ec2:GetConsoleOutput`, `ec2:TerminateInstances`
+- Optional AMI resolution path: `ssm:GetParameter` (falls back to `ec2:DescribeImages`)
+
 ## EC2 quickstart
 
 Use EC2 when you want the simplest reproducible production path:
