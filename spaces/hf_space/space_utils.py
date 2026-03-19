@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 def _bootstrap_src_path() -> None:
     here = Path(__file__).resolve()
-    for candidate in (here.parents[2] / "src", here.parents[1] / "src"):
+    candidates = [parent / "src" for parent in (here.parent, *tuple(here.parents))]
+    for candidate in candidates:
         if candidate.exists() and str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
             return
@@ -350,12 +351,10 @@ def analyze_path(path: Path) -> SpaceBundle:
 
 def find_local_sample() -> Optional[Path]:
     here = Path(__file__).resolve()
-    candidates = [
-        here.parent / "sample_report.json",
-        here.parents[2] / "examples" / "synthetic" / "report.json",
-        here.parents[2] / "examples" / "a100_vllm" / "report.json",
-        here.parents[1] / "examples" / "synthetic" / "report.json",
-    ]
+    candidates = [here.parent / "sample_report.json"]
+    for parent in (here.parent, *tuple(here.parents)):
+        candidates.append(parent / "examples" / "synthetic" / "report.json")
+        candidates.append(parent / "examples" / "a100_vllm" / "report.json")
     for candidate in candidates:
         if candidate.exists():
             return candidate

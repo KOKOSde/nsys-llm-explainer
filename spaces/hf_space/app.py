@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional, Sequence, Tuple
 
@@ -163,7 +164,7 @@ def _resolve_path(uploaded: Any, sample_path: str) -> Optional[Path]:
     return None
 
 
-def _run_analysis(uploaded: Any, sample_path: str) -> Tuple[Any, str, pd.DataFrame, str, str, list[str], pd.DataFrame]:
+def _run_analysis(uploaded, sample_path):
     path = _resolve_path(uploaded, sample_path)
     if not path:
         return _empty_outputs(
@@ -256,7 +257,11 @@ def _build_demo(sample_path: Optional[Path]) -> gr.Blocks:
 def main() -> None:
     demo = _build_demo(find_local_sample())
     demo.queue()
-    demo.launch()
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.getenv("PORT", "7860")),
+        share=True,
+    )
 
 
 if __name__ == "__main__":

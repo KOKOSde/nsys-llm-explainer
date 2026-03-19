@@ -4,7 +4,7 @@ emoji: "📈"
 colorFrom: blue
 colorTo: green
 sdk: gradio
-sdk_version: 4.44.0
+python_version: "3.10"
 app_file: app.py
 pinned: false
 ---
@@ -42,7 +42,7 @@ If you want a reproducible Space, keep the Git dependency pinned to a release ta
 If you want the Space to follow the latest `main` branch instead, change:
 
 ```txt
-git+https://github.com/KOKOSde/nsys-llm-explainer.git@v0.3.0
+git+https://github.com/KOKOSde/nsys-llm-explainer.git@v0.3.2
 ```
 
 to:

@@ -11,12 +11,18 @@ import requests
 class NsysExplainerClient:
     """Thin client around the nsys-llm-explainer HTTP API."""
 
-    def __init__(self, base_url: str, *, timeout_s: int = 300) -> None:
+    def __init__(self, base_url: str, *, timeout_s: int = 300, api_key: Optional[str] = None) -> None:
         self.base_url = str(base_url).rstrip("/")
         self.timeout_s = int(timeout_s)
+        self.api_key = str(api_key).strip() if api_key else None
+
+    def _headers(self) -> Dict[str, str]:
+        if self.api_key:
+            return {"x-api-key": str(self.api_key)}
+        return {}
 
     def health(self) -> Dict[str, Any]:
-        response = requests.get(self.base_url + "/healthz", timeout=self.timeout_s)
+        response = requests.get(self.base_url + "/healthz", timeout=self.timeout_s, headers=self._headers())
         response.raise_for_status()
         return dict(response.json())
 
@@ -45,6 +51,7 @@ class NsysExplainerClient:
             files=files,
             data=data,
             timeout=self.timeout_s,
+            headers=self._headers(),
         )
         response.raise_for_status()
         return dict(response.json())
@@ -74,6 +81,7 @@ class NsysExplainerClient:
             files=files,
             data=data,
             timeout=self.timeout_s,
+            headers=self._headers(),
         )
         response.raise_for_status()
         out_path = Path(output_zip_path)

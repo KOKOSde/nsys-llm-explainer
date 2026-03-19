@@ -1,5 +1,19 @@
 ## Changelog
 
+### v0.3.2
+
+- **API authentication middleware**:
+  - Added optional API-key protection via `NSYS_API_KEY` in `src/nsys_llm_explainer/api.py`.
+  - `/` and `/healthz` remain public; protected endpoints accept either `x-api-key` or `Authorization: Bearer <key>`.
+  - Added API auth tests in `tests/test_api_auth.py`.
+- **Client + deploy updates**:
+  - Added `api_key` support to `src/nsys_llm_explainer/client.py`.
+  - Added `--api-key` support to `deploy/aws/provision_ec2.py` and documented it in `deploy/aws/README.md`.
+- **Hugging Face Space hardening**:
+  - Fixed Space bootstrap path assumptions for root-level Space deployments.
+  - Updated Space runtime dependencies/launch config for current Hugging Face Gradio runtime.
+  - Published/updated Space at `https://huggingface.co/spaces/KokosDev/nsys-llm-explainer`.
+
 ### v0.3.1
 
 - **AWS EC2 deployment hardening**:

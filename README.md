@@ -5,7 +5,7 @@
 
 ![nsys-llm-explainer hero diagram](docs/hero.svg)
 
-Current release: **v0.3.1**
+Current release: **v0.3.2**
 
 ### Why this exists
 
@@ -141,6 +141,13 @@ python3 -m pip install -e .[api,client]
 Run service:
 
 ```bash
+nsys-llm-api --host 0.0.0.0 --port 8080
+```
+
+Optional API-key protection:
+
+```bash
+export NSYS_API_KEY="change-me"
 nsys-llm-api --host 0.0.0.0 --port 8080
 ```
 

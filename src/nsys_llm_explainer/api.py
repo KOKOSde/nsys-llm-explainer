@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import io
 import json
 import os
@@ -20,6 +21,7 @@ from .report import AnalysisOutputs, analyze, render_markdown, write_artifacts
 
 
 MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+UNPROTECTED_PATHS = {"/", "/healthz"}
 
 
 def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
@@ -28,6 +30,24 @@ def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     except Exception:
         return int(default)
     return max(minimum, min(maximum, parsed))
+
+
+def _configured_api_key() -> Optional[str]:
+    key = str(os.getenv("NSYS_API_KEY", "")).strip()
+    return key or None
+
+
+def _extract_api_key(headers: Mapping[str, str]) -> Optional[str]:
+    key = str(headers.get("x-api-key") or "").strip()
+    if key:
+        return key
+    auth = str(headers.get("authorization") or "").strip()
+    lower = auth.lower()
+    if lower.startswith("bearer "):
+        token = auth[7:].strip()
+        if token:
+            return token
+    return None
 
 
 def _summarize_report(report: Mapping[str, Any]) -> Dict[str, Any]:
@@ -128,18 +148,45 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def _api_key_guard(request: Any, call_next: Any) -> Any:
+    required_key = _configured_api_key()
+    if not required_key:
+        return await call_next(request)
+    if str(request.method).upper() == "OPTIONS":
+        return await call_next(request)
+
+    path = str(request.url.path or "/")
+    if path in UNPROTECTED_PATHS:
+        return await call_next(request)
+
+    supplied_key = _extract_api_key(request.headers)
+    if not supplied_key or not hmac.compare_digest(str(supplied_key), str(required_key)):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized. Provide x-api-key or Authorization: Bearer <key>."},
+        )
+    return await call_next(request)
+
+
 @app.get("/")
 def root() -> Dict[str, Any]:
     return {
         "service": "nsys-llm-explainer",
         "version": __version__,
+        "auth_mode": "api_key" if _configured_api_key() else "public",
         "endpoints": ["/healthz", "/v1/analyze/json", "/v1/analyze/artifacts"],
     }
 
 
 @app.get("/healthz")
 def healthz() -> Dict[str, Any]:
-    return {"ok": True, "service": "nsys-llm-explainer", "version": __version__}
+    return {
+        "ok": True,
+        "service": "nsys-llm-explainer",
+        "version": __version__,
+        "auth_enabled": bool(_configured_api_key()),
+    }
 
 
 @app.post("/v1/analyze/json")

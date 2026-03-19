@@ -38,6 +38,10 @@ exec /opt/nsys-venv/bin/python -m nsys_llm_explainer.api --host 0.0.0.0 --port {
 SCRIPT
 chmod +x /usr/local/bin/start_nsys_api.sh
 
+cat >/etc/default/nsys-llm-api <<'ENV'
+NSYS_API_KEY={api_key}
+ENV
+
 cat >/etc/systemd/system/nsys-llm-api.service <<'UNIT'
 [Unit]
 Description=nsys-llm-explainer API
@@ -47,6 +51,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+EnvironmentFile=-/etc/default/nsys-llm-api
 Environment=PORT={service_port}
 ExecStart=/usr/local/bin/start_nsys_api.sh
 Restart=always
@@ -61,11 +66,14 @@ systemctl enable --now nsys-llm-api
 """
 
 
-def _render_user_data(*, repo_url: str, repo_ref: str, service_port: int) -> str:
+def _render_user_data(*, repo_url: str, repo_ref: str, service_port: int, api_key: str) -> str:
+    if "\n" in str(api_key) or "\r" in str(api_key):
+        raise ValueError("API key cannot contain newline characters.")
     return USER_DATA_TEMPLATE.format(
         repo_url=str(repo_url),
         repo_ref=str(repo_ref),
         service_port=int(service_port),
+        api_key=str(api_key),
     )
 
 
@@ -77,6 +85,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--name-prefix", default="nsys-llm-api", help="Name tag prefix.")
     parser.add_argument("--repo-url", default=DEFAULT_REPO_URL, help="Git URL to clone on the instance.")
     parser.add_argument("--repo-ref", default=DEFAULT_REPO_REF, help="Git branch/tag/sha to deploy.")
+    parser.add_argument(
+        "--api-key",
+        default="",
+        help="Optional API key. If set, /v1 endpoints require x-api-key or Bearer token.",
+    )
     parser.add_argument("--allow-ssh", action="store_true", help="Allow inbound SSH from 0.0.0.0/0.")
     parser.add_argument("--create-key-pair", action="store_true", help="Create a new key pair and write PEM locally.")
     parser.add_argument(
@@ -236,6 +249,7 @@ def main() -> int:
             repo_url=str(args.repo_url),
             repo_ref=str(args.repo_ref),
             service_port=service_port,
+            api_key=str(args.api_key),
         ),
     }
     if key_name_for_instance:
@@ -269,6 +283,7 @@ def main() -> int:
         "public_ip": public_ip,
         "public_dns": public_dns,
         "api_url": "http://{}:{}/healthz".format(public_ip, service_port) if public_ip else None,
+        "api_auth_mode": "api_key" if str(args.api_key).strip() else "public",
         "key_pair_name": key_name_for_instance,
         "key_pair_path": str(key_pair_path) if key_pair_path else None,
         "created_at_utc": dt.datetime.utcnow().isoformat() + "Z",

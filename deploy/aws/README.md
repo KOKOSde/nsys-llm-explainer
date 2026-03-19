@@ -37,6 +37,8 @@ python3 deploy/aws/provision_ec2.py \
   --region us-east-1 \
   --instance-type t3.small \
   --name-prefix nsys-llm-api \
+  --service-port 7860 \
+  --repo-ref v0.3.1 \
   --output-json deploy/aws/ec2_deploy_output.json
 ```
 
@@ -44,6 +46,7 @@ Optional:
 
 - `--allow-ssh` to open port 22
 - `--create-key-pair` to create and save a PEM key under `deploy/aws/`
+- `--api-key <secret>` to require `x-api-key`/Bearer token on all endpoints except `/` and `/healthz`
 
 Minimum IAM actions typically required:
 
