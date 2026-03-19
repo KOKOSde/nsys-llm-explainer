@@ -21,12 +21,20 @@ SERVICE_PORT = 7860
 USER_DATA = """#!/bin/bash
 set -euxo pipefail
 
-dnf update -y
-dnf install -y python3 python3-pip git
+dnf install -y python3 python3-pip python3-setuptools git
 
-python3 -m venv /opt/nsys-venv
-/opt/nsys-venv/bin/python -m pip install --upgrade pip
-/opt/nsys-venv/bin/python -m pip install "git+https://github.com/KOKOSde/nsys-llm-explainer.git@v0.3.0#egg=nsys-llm-explainer[api]"
+python3 -m pip install --upgrade pip || true
+python3 -m pip install --break-system-packages fastapi uvicorn python-multipart pandas plotly dash requests
+git clone --depth 1 --branch v0.3.0 https://github.com/KOKOSde/nsys-llm-explainer.git /opt/nsys-llm-explainer
+
+cat >/usr/local/bin/start_nsys_api.sh <<'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+cd /opt/nsys-llm-explainer
+export PYTHONPATH=/opt/nsys-llm-explainer/src
+exec python3 -m nsys_llm_explainer.api --host 0.0.0.0 --port 7860
+SCRIPT
+chmod +x /usr/local/bin/start_nsys_api.sh
 
 cat >/etc/systemd/system/nsys-llm-api.service <<'UNIT'
 [Unit]
@@ -38,7 +46,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Environment=PORT=7860
-ExecStart=/opt/nsys-venv/bin/nsys-llm-api --host 0.0.0.0 --port 7860
+ExecStart=/usr/local/bin/start_nsys_api.sh
 Restart=always
 RestartSec=3
 
