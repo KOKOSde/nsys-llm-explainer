@@ -1306,6 +1306,64 @@ def _build_app(initial_report: Dict[str, Any]) -> Dash:
                 [
                     html.Div(
                         [
+                            html.H2(
+                                "Nsight Trace Intelligence Dashboard",
+                                style={"margin": "0 0 6px 0", "color": "#eef5ff", "fontSize": "24px", "fontWeight": 700},
+                            ),
+                            html.Div(
+                                "Waterfall + roofline + timeline + NCCL/NVLink correlation + baseline deltas in one view.",
+                                style={"color": "#9fb4cf", "fontSize": "13px", "marginBottom": "8px"},
+                            ),
+                            html.Div(
+                                [
+                                    html.Span(
+                                        "Evidence-backed bottleneck summary",
+                                        style={
+                                            "display": "inline-block",
+                                            "padding": "4px 10px",
+                                            "borderRadius": "999px",
+                                            "border": "1px solid #27476f",
+                                            "background": "#13243a",
+                                            "color": "#bcd9ff",
+                                            "fontSize": "11px",
+                                            "marginRight": "6px",
+                                            "marginBottom": "6px",
+                                        },
+                                    ),
+                                    html.Span(
+                                        "Current vs baseline comparison",
+                                        style={
+                                            "display": "inline-block",
+                                            "padding": "4px 10px",
+                                            "borderRadius": "999px",
+                                            "border": "1px solid #3c3a6d",
+                                            "background": "#1a1f3f",
+                                            "color": "#c9c6ff",
+                                            "fontSize": "11px",
+                                            "marginRight": "6px",
+                                            "marginBottom": "6px",
+                                        },
+                                    ),
+                                    html.Span(
+                                        "One-click static export",
+                                        style={
+                                            "display": "inline-block",
+                                            "padding": "4px 10px",
+                                            "borderRadius": "999px",
+                                            "border": "1px solid #2d5f4c",
+                                            "background": "#152a24",
+                                            "color": "#b9f2dd",
+                                            "fontSize": "11px",
+                                            "marginBottom": "6px",
+                                        },
+                                    ),
+                                ]
+                            ),
+                        ],
+                        style={"marginBottom": "12px"},
+                    ),
+                    html.Div(
+                        [
                             html.Div(
                                 [html.Span("Trace file", style={"display": "block", "color": "#8da4c3", "fontSize": "11px", "textTransform": "uppercase"}), html.Div(id="banner-trace", style={"color": "#e7edf6", "fontSize": "14px", "marginTop": "4px"})],
                                 style={"border": "1px solid #233043", "borderRadius": "10px", "padding": "10px", "background": "linear-gradient(180deg, #121c2b 0%, #0f1622 100%)", "minHeight": "68px"},

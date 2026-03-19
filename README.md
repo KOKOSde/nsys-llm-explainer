@@ -13,6 +13,7 @@ Nsight Systems SQLite exports are powerful but tedious to inspect by hand when y
 
 This tool turns `trace.sqlite` into a prioritized report with explicit evidence:
 
+- Prioritized findings with severity, evidence, and concrete next actions
 - Top CUDA kernels and launch storms
 - Top CPU↔GPU barriers, including blocking memcpy and CPU launcher gaps
 - Top NCCL ops, with overlap against non-NCCL compute kernels
@@ -25,6 +26,13 @@ The repo is intentionally conservative:
 - It only claims NCCL/NVLink correlation when the exported SQLite data supports it.
 - If NVLink counters are missing, it prints `NVLink counters not found` and tells you exactly how to re-capture.
 - If only NCCL kernel names are available, it degrades to kernel-name-based NCCL detection instead of pretending it saw higher-level collectives.
+
+### Why this is different
+
+- It is evidence-first: every major section includes derivation and limitation notes, so conclusions are auditable.
+- It is safe by default: missing counters, weak PID attribution, or low NVTX coverage are surfaced as warnings instead of hidden.
+- It is workflow-ready: one run produces both human-readable `report.md` and analysis tables/JSON for downstream dashboards.
+- It supports regression checks: the dashboard accepts current + baseline traces and reports a direct top-kernel delta.
 
 ### New: NCCL + NVLink + Barrier analysis
 
@@ -61,10 +69,10 @@ Useful flags:
 
 ### Dashboard
 
-Install with dashboard dependencies:
+Dashboard dependencies are included in the base install:
 
 ```bash
-python3 -m pip install -e .[dev]
+python3 -m pip install -e .
 ```
 
 Launch:
@@ -85,6 +93,7 @@ Dashboard highlights:
 
 - Drag-and-drop current and baseline `.sqlite`/`.json` files for side-by-side trend checks.
 - KPI banner for total GPU time, total CPU time, detected bottleneck, framework hints, and baseline delta.
+- Upload from prior `report.json` is supported; when available, NVLink sidecar tables are auto-loaded.
 - Kernel waterfall with threshold filtering and baseline overlays.
 - Roofline scatter + top-50 timeline (with NCCL visibility toggle).
 - NCCL collective summaries with overlap, NVLink utilization timeline, stream-overlap summary, and launch-latency histogram.
@@ -113,6 +122,7 @@ Kernel waterfall: inspect execution ordering and quickly spot long kernels, burs
 The generated output directory contains:
 
 - `report.md`, `report.json`
+- `report.json` includes `findings` (severity + evidence + recommendations) and explicit `warnings`
 - `tables/kernels.csv`
 - `tables/barriers.csv`
 - `tables/nccl_ops.csv`
