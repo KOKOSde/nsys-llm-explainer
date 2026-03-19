@@ -5,7 +5,7 @@
 
 ![nsys-llm-explainer hero diagram](docs/hero.svg)
 
-Current release: **v0.3.0**
+Current release: **v0.3.1**
 
 ### Why this exists
 

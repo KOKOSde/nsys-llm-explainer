@@ -1,5 +1,13 @@
 ## Changelog
 
+### v0.3.1
+
+- **AWS EC2 deployment hardening**:
+  - Reworked `deploy/aws/provision_ec2.py` bootstrap to use a dedicated virtual environment on Amazon Linux 2023.
+  - Removed reliance on `pip --break-system-packages` to avoid cloud-init failures on older pip builds.
+  - Added deploy-time configuration flags for `--service-port`, `--repo-url`, and `--repo-ref`.
+  - Updated security-group ingress to respect the configured service port.
+
 ### v0.3.0
 
 - **Hugging Face Space package**:
