@@ -1,0 +1,20 @@
+services:
+  nsys-llm-explainer-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    image: nsys-llm-explainer:api
+    environment:
+      PORT: "7860"
+      APP_HOME: /app
+      DATA_DIR: /data
+      TRACE_INPUT_DIR: /data/inbox
+      TRACE_OUTPUT_DIR: /data/outbox
+    ports:
+      - "7860:7860"
+    volumes:
+      - ../data/inbox:/data/inbox:ro
+      - ../data/outbox:/data/outbox
+      - ../data/cache:/data/cache
+    restart: unless-stopped
+    init: true

@@ -1,5 +1,22 @@
 ## Changelog
 
+### v0.3.0
+
+- **Hugging Face Space package**:
+  - Added `spaces/hf_space/` with a Gradio app wrapper, helper utilities, sample report payload, and Space metadata/requirements.
+  - Space supports `.sqlite` and `.json` uploads, shows prioritized findings/summary tabs, and exposes downloadable artifacts.
+- **API + client developer experience**:
+  - Added `nsys-llm-explainer` HTTP API (`src/nsys_llm_explainer/api.py`) with health, JSON analysis, and artifact ZIP endpoints.
+  - Added Python API client (`src/nsys_llm_explainer/client.py`) plus `examples/api_client_demo.py`.
+  - Added API docs in `docs/API.md`.
+- **Production deployment kit**:
+  - Added `deploy/` with `Dockerfile.api`, `docker-compose.api.yml`, and AWS/GCP deployment quickstarts.
+- **Application assets**:
+  - Added role-targeted Hugging Face application docs in `career/` (resume bullets, cover letters, 30/60/90 plan, portfolio checklist).
+- **Packaging updates**:
+  - Added optional dependency groups for `api`, `client`, and `spaces`.
+  - Added `nsys-llm-api` console script.
+
 ### v0.2.0
 
 - **Dashboard expansion**:

@@ -1,0 +1,761 @@
+{
+  "findings": [
+    {
+      "evidence": [
+        "Top kernel `computeKernel` is 42.6% of total kernel time."
+      ],
+      "recommendation": [
+        "Focus optimization effort on this kernel first."
+      ],
+      "severity": "medium",
+      "title": "Single kernel is a large share of GPU time"
+    },
+    {
+      "evidence": [
+        "Top sync-like call `cudaStreamSynchronize` total 0.80 ms across 1 calls.",
+        "All sync-like calls total 1.50 ms."
+      ],
+      "recommendation": [
+        "Look for `cudaDeviceSynchronize` / stream waits in your serving loop and remove unnecessary barriers.",
+        "Prefer async launches and overlap CPU work with GPU execution; avoid per-token synchronization."
+      ],
+      "severity": "medium",
+      "title": "CPU\u2194GPU synchronization detected (runtime API)"
+    }
+  ],
+  "generated_at": "2026-03-11T03:52:08.704882+00:00",
+  "metrics": {
+    "barriers": {
+      "barriers": [
+        {
+          "api_name": "cudaStreamSynchronize",
+          "avg_duration_us": 800.0,
+          "barrier_kind": "sync_api",
+          "count": 1,
+          "max_duration_us": 800.0,
+          "total_time_ms": 0.8
+        },
+        {
+          "api_name": "cudaDeviceSynchronize",
+          "avg_duration_us": 700.0,
+          "barrier_kind": "sync_api",
+          "count": 1,
+          "max_duration_us": 700.0,
+          "total_time_ms": 0.7
+        },
+        {
+          "api_name": "cudaMemcpy",
+          "avg_duration_us": 600.0,
+          "barrier_kind": "blocking_memcpy",
+          "count": 1,
+          "max_duration_us": 600.0,
+          "total_time_ms": 0.6
+        },
+        {
+          "api_name": "cpu_launcher_gap",
+          "avg_duration_us": 200.0,
+          "barrier_kind": "cpu_launcher_gap",
+          "count": 1,
+          "max_duration_us": 200.0,
+          "total_time_ms": 0.2
+        }
+      ],
+      "barriers_by_pid": [
+        {
+          "api_name": "cudaStreamSynchronize",
+          "avg_duration_us": 800.0,
+          "barrier_kind": "sync_api",
+          "count": 1,
+          "max_duration_us": 800.0,
+          "pid": 111,
+          "total_time_ms": 0.8
+        },
+        {
+          "api_name": "cudaMemcpy",
+          "avg_duration_us": 600.0,
+          "barrier_kind": "blocking_memcpy",
+          "count": 1,
+          "max_duration_us": 600.0,
+          "pid": 111,
+          "total_time_ms": 0.6
+        },
+        {
+          "api_name": "cpu_launcher_gap",
+          "avg_duration_us": 200.0,
+          "barrier_kind": "cpu_launcher_gap",
+          "count": 1,
+          "max_duration_us": 200.0,
+          "pid": 111,
+          "total_time_ms": 0.2
+        },
+        {
+          "api_name": "cudaDeviceSynchronize",
+          "avg_duration_us": 700.0,
+          "barrier_kind": "sync_api",
+          "count": 1,
+          "max_duration_us": 700.0,
+          "pid": 222,
+          "total_time_ms": 0.7
+        }
+      ],
+      "launcher_gap_threshold_us": 50.0,
+      "notes": [],
+      "pids": [
+        {
+          "barrier_event_count": 3,
+          "pid": 111,
+          "top_barrier": "cudaStreamSynchronize",
+          "top_barrier_kind": "sync_api",
+          "total_barrier_time_ms": 1.6
+        },
+        {
+          "barrier_event_count": 1,
+          "pid": 222,
+          "top_barrier": "cudaDeviceSynchronize",
+          "top_barrier_kind": "sync_api",
+          "total_barrier_time_ms": 0.7
+        }
+      ],
+      "present": true,
+      "sql": {
+        "runtime_barriers": "SELECT (CAST(r.globalTid / 16777216 AS INT) % 16777216) AS pid, s.value AS api_name, r.start AS start_ns, r.end AS end_ns FROM CUPTI_ACTIVITY_KIND_RUNTIME r  JOIN StringIds s ON s.id = r.nameId  WHERE r.end IS NOT NULL AND r.end > r.start AND (LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ?) ORDER BY pid, start_ns"
+      }
+    },
+    "by_pid": {
+      "kernels": {
+        "kernel_table": "CUPTI_ACTIVITY_KIND_KERNEL",
+        "kernels": [
+          {
+            "avg_duration_us": 1000.0,
+            "call_count": 2,
+            "device_id": 0,
+            "kernel_name": "computeKernel",
+            "pct_of_pid_kernel_time": 50.0,
+            "pct_of_total_kernel_time": 32.78688524590164,
+            "pid": 111,
+            "pid_pct_of_total_kernel_time": 65.57377049180327,
+            "pid_total_kernel_time_ms": 4.0,
+            "total_time_ms": 2.0
+          },
+          {
+            "avg_duration_us": 2000.0,
+            "call_count": 1,
+            "device_id": 0,
+            "kernel_name": "ncclAllReduceRingKernel",
+            "pct_of_pid_kernel_time": 50.0,
+            "pct_of_total_kernel_time": 32.78688524590164,
+            "pid": 111,
+            "pid_pct_of_total_kernel_time": 65.57377049180327,
+            "pid_total_kernel_time_ms": 4.0,
+            "total_time_ms": 2.0
+          },
+          {
+            "avg_duration_us": 1500.0,
+            "call_count": 1,
+            "device_id": 0,
+            "kernel_name": "ncclBroadcastRingKernel",
+            "pct_of_pid_kernel_time": 71.42857142857143,
+            "pct_of_total_kernel_time": 24.59016393442623,
+            "pid": 222,
+            "pid_pct_of_total_kernel_time": 34.42622950819672,
+            "pid_total_kernel_time_ms": 2.1,
+            "total_time_ms": 1.5
+          },
+          {
+            "avg_duration_us": 600.0,
+            "call_count": 1,
+            "device_id": 0,
+            "kernel_name": "computeKernel",
+            "pct_of_pid_kernel_time": 28.57142857142857,
+            "pct_of_total_kernel_time": 9.836065573770492,
+            "pid": 222,
+            "pid_pct_of_total_kernel_time": 34.42622950819672,
+            "pid_total_kernel_time_ms": 2.1,
+            "total_time_ms": 0.6
+          }
+        ],
+        "notes": [],
+        "pid_quality": {
+          "pid0_fraction": 0.0,
+          "pid0_rows": 0,
+          "pid_ge_10m_fraction": 0.0,
+          "pid_ge_10m_rows": 0,
+          "present": true,
+          "rows_with_pid": 5
+        },
+        "pid_source": "globalPid",
+        "pids": [
+          {
+            "kernel_count": 3,
+            "pct_of_total_kernel_time": 65.57377049180327,
+            "pid": 111,
+            "total_kernel_time_ms": 4.0,
+            "total_kernel_time_ns": 4000000
+          },
+          {
+            "kernel_count": 2,
+            "pct_of_total_kernel_time": 34.42622950819672,
+            "pid": 222,
+            "total_kernel_time_ms": 2.1,
+            "total_kernel_time_ns": 2100000
+          }
+        ],
+        "present": true,
+        "sql": {
+          "kernels": "SELECT (CAST(k.globalPid / 16777216 AS INT) % 16777216) AS pid, s.value AS kernel_name, k.deviceId AS device_id, COUNT(*) AS call_count, SUM(k.end-k.start) AS total_ns, AVG(k.end-k.start) AS avg_ns FROM CUPTI_ACTIVITY_KIND_KERNEL k  JOIN StringIds s ON s.id = k.demangledName  WHERE ((CAST(k.globalPid / 16777216 AS INT) % 16777216)) IN (?,?) GROUP BY pid, kernel_name, device_id ORDER BY pid, total_ns DESC",
+          "pid_quality": "SELECT COUNT(*) AS rows_with_pid, SUM(CASE WHEN (CAST(k.globalPid / 16777216 AS INT) % 16777216) = 0 THEN 1 ELSE 0 END) AS pid0_rows, SUM(CASE WHEN (CAST(k.globalPid / 16777216 AS INT) % 16777216) >= 10000000 THEN 1 ELSE 0 END) AS pid_ge_10m_rows FROM CUPTI_ACTIVITY_KIND_KERNEL k WHERE k.globalPid IS NOT NULL",
+          "top_pids": "SELECT (CAST(k.globalPid / 16777216 AS INT) % 16777216) AS pid, SUM(k.end-k.start) AS total_ns, COUNT(*) AS kernel_count FROM CUPTI_ACTIVITY_KIND_KERNEL k WHERE k.globalPid IS NOT NULL GROUP BY pid ORDER BY total_ns DESC LIMIT ?"
+        }
+      },
+      "nvtx": {
+        "notes": [
+          "No NVTX ranges found."
+        ],
+        "present": false,
+        "sql": {}
+      },
+      "nvtx_kernel_phases": null,
+      "sync": {
+        "notes": [],
+        "pid_source": "globalTid",
+        "pids": [
+          {
+            "pid": 111,
+            "sync_total_time_ms": 0.8
+          },
+          {
+            "pid": 222,
+            "sync_total_time_ms": 0.7
+          }
+        ],
+        "present": true,
+        "runtime_table": "CUPTI_ACTIVITY_KIND_RUNTIME",
+        "sql": {
+          "sync_by_pid": "SELECT (CAST(r.globalTid / 16777216 AS INT) % 16777216) AS pid, s.value AS api_name, COUNT(*) AS call_count, SUM(r.end-r.start) AS total_ns, AVG(r.end-r.start) AS avg_ns FROM CUPTI_ACTIVITY_KIND_RUNTIME r  JOIN StringIds s ON s.id = r.nameId  WHERE ((s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?)) AND (r.globalTid IS NOT NULL) GROUP BY pid, api_name ORDER BY total_ns DESC LIMIT ?"
+        },
+        "sync_calls": [
+          {
+            "api_name": "cudaStreamSynchronize",
+            "avg_duration_us": 800.0,
+            "call_count": 1,
+            "pid": 111,
+            "total_time_ms": 0.8
+          },
+          {
+            "api_name": "cudaDeviceSynchronize",
+            "avg_duration_us": 700.0,
+            "call_count": 1,
+            "pid": 222,
+            "total_time_ms": 0.7
+          }
+        ]
+      }
+    },
+    "gpu_idle": {
+      "devices": [
+        {
+          "busy_ms": 4.5,
+          "device_id": 0,
+          "idle_ms": 1.0,
+          "idle_pct_of_window": 18.181818181818183,
+          "window_ms": 5.5
+        }
+      ],
+      "gaps": [
+        {
+          "device_id": 0,
+          "gap_end_ns": 4000000,
+          "gap_ms": 1.0,
+          "gap_start_ns": 3000000
+        }
+      ],
+      "notes": [],
+      "sql": {
+        "events": "SELECT start, end, deviceId AS device_id FROM CUPTI_ACTIVITY_KIND_KERNEL ORDER BY device_id, start"
+      },
+      "table": "CUPTI_ACTIVITY_KIND_KERNEL"
+    },
+    "launch_storm": {
+      "is_launch_storm": false,
+      "launches_per_s": 909.0909090909091,
+      "median_kernel_us": 1000.0,
+      "notes": [],
+      "p50_kernel_us": 1000.0,
+      "p90_kernel_us": 1800.0,
+      "p99_kernel_us": 1980.0,
+      "pct_under_10us": 0.0,
+      "pct_under_20us": 0.0,
+      "pct_under_5us": 0.0,
+      "sql": {
+        "tiny_kernels": "SELECT s.value AS kernel_name, COUNT(*) AS call_count, AVG(k.end-k.start) AS avg_dur_ns FROM CUPTI_ACTIVITY_KIND_KERNEL k  JOIN StringIds s ON s.id = k.demangledName  WHERE (k.end-k.start) <= ? GROUP BY kernel_name ORDER BY call_count DESC LIMIT ?"
+      },
+      "storm_thresholds": {
+        "launches_per_s_threshold_1": 50000.0,
+        "launches_per_s_threshold_2": 100000.0,
+        "p50_kernel_us_threshold_1": 10.0,
+        "p50_kernel_us_threshold_2": 20.0
+      },
+      "tiny_kernel_us": 5.0,
+      "tiny_kernels": [],
+      "total_launches": 5,
+      "window_s": 0.0055
+    },
+    "nccl": {
+      "event_count": 2,
+      "notes": [
+        "Using NCCL kernel names as NCCL windows; collective names may be inferred only from kernel names."
+      ],
+      "ops": [
+        {
+          "avg_duration_us": 2000.0,
+          "compute_overlap_ms": 1.0,
+          "compute_overlap_pct": 50.0,
+          "count": 1,
+          "max_duration_ms": 2.0,
+          "op_name": "allreduce",
+          "raw_name_example": "ncclAllReduceRingKernel",
+          "source": "kernel",
+          "straggler": "pid:111",
+          "straggler_max_ms": 2.0,
+          "straggler_total_ms": 2.0,
+          "total_time_ms": 2.0
+        },
+        {
+          "avg_duration_us": 1500.0,
+          "compute_overlap_ms": 0.6,
+          "compute_overlap_pct": 40.0,
+          "count": 1,
+          "max_duration_ms": 1.5,
+          "op_name": "broadcast",
+          "raw_name_example": "ncclBroadcastRingKernel",
+          "source": "kernel",
+          "straggler": "pid:222",
+          "straggler_max_ms": 1.5,
+          "straggler_total_ms": 1.5,
+          "total_time_ms": 1.5
+        }
+      ],
+      "pids": [
+        {
+          "max_duration_ms": 2.0,
+          "nccl_event_count": 1,
+          "pid": 111,
+          "top_nccl_op": "allreduce",
+          "total_nccl_time_ms": 2.0
+        },
+        {
+          "max_duration_ms": 1.5,
+          "nccl_event_count": 1,
+          "pid": 222,
+          "top_nccl_op": "broadcast",
+          "total_nccl_time_ms": 1.5
+        }
+      ],
+      "present": true,
+      "source": "kernel",
+      "sql": {
+        "compute_overlap": "SELECT k.start AS start_ns, k.end AS end_ns, s.value AS kernel_name FROM CUPTI_ACTIVITY_KIND_KERNEL k  JOIN StringIds s ON s.id = k.demangledName  WHERE k.end IS NOT NULL AND k.end > k.start ORDER BY k.start",
+        "nccl_kernels": "SELECT (CAST(k.globalPid / 16777216 AS INT) % 16777216) AS pid, k.deviceId AS device_id, s.value AS kernel_name, k.start AS start_ns, k.end AS end_ns FROM CUPTI_ACTIVITY_KIND_KERNEL k  JOIN StringIds s ON s.id = k.demangledName  WHERE k.end IS NOT NULL AND k.end > k.start AND (LOWER(s.value) LIKE ?) ORDER BY k.start",
+        "nccl_runtime": "SELECT (CAST(r.globalTid / 16777216 AS INT) % 16777216) AS pid, s.value AS api_name, r.start AS start_ns, r.end AS end_ns FROM CUPTI_ACTIVITY_KIND_RUNTIME r  JOIN StringIds s ON s.id = r.nameId  WHERE r.end IS NOT NULL AND r.end > r.start AND (LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ? OR LOWER(s.value) LIKE ?) ORDER BY r.start"
+      },
+      "windows": [
+        {
+          "end_ns": 3000000,
+          "start_ns": 1000000
+        },
+        {
+          "end_ns": 5500000,
+          "start_ns": 4000000
+        }
+      ]
+    },
+    "nvlink_during_nccl": {
+      "capture_instructions": [
+        "NVLink counters not found in the SQLite export.",
+        "List supported metric sets first: `nsys profile --gpu-metrics-devices=all --gpu-metrics-set=help`.",
+        "Then re-capture with GPU Metrics enabled, for example: `sudo nsys profile --trace=nccl,cuda,nvtx,osrt --cuda-trace-scope=process-tree --gpu-metrics-devices=all --gpu-metrics-set=<supported-set> --gpu-metrics-frequency=10000 --cuda-graph-trace=node -o trace <app>`.",
+        "Export again with SQLite output: `nsys export --type sqlite --output trace.sqlite --force-overwrite=true --lazy=false trace.nsys-rep`."
+      ],
+      "missing_counters": true,
+      "notes": [
+        "GPU metric tables were not found in this export."
+      ],
+      "present": false,
+      "rows": [],
+      "sql": {}
+    },
+    "nvtx": {
+      "instances": [],
+      "notes": [
+        "No NVTX table found."
+      ],
+      "ranges": [],
+      "sql": {},
+      "table": null
+    },
+    "nvtx_coverage_warn_threshold": 0.7,
+    "nvtx_kernel_phases": null,
+    "nvtx_kernel_time": {
+      "notes": [
+        "Need kernel + runtime + NVTX tables for NVTX\u2192kernel attribution."
+      ],
+      "present": false,
+      "ranges": [],
+      "sql": {}
+    },
+    "nvtx_phases": null,
+    "per_pid": {
+      "notes": [],
+      "pid_source": "globalPid",
+      "pids": [
+        {
+          "launch_storm": {
+            "is_launch_storm": false,
+            "launches_per_s": 1000.0,
+            "median_kernel_us": 1000.0,
+            "p50_kernel_us": 1000.0,
+            "p90_kernel_us": 2000.0,
+            "p99_kernel_us": 2000.0,
+            "pct_under_10us": 0.0,
+            "pct_under_20us": 0.0,
+            "pct_under_5us": 0.0,
+            "storm_thresholds": {
+              "launches_per_s_threshold_1": 50000.0,
+              "launches_per_s_threshold_2": 100000.0,
+              "p50_kernel_us_threshold_1": 10.0,
+              "p50_kernel_us_threshold_2": 20.0
+            },
+            "total_launches": 3,
+            "window_s": 0.003
+          },
+          "nvtx": {
+            "notes": [
+              "No NVTX table."
+            ],
+            "present": false,
+            "ranges": [],
+            "table": null
+          },
+          "pid": 111,
+          "sync": {
+            "notes": [],
+            "present": true,
+            "sql": "SELECT s.value AS api_name, COUNT(*) AS call_count, SUM(r.end-r.start) AS total_time_ns, AVG(r.end-r.start) AS avg_time_ns FROM CUPTI_ACTIVITY_KIND_RUNTIME r  JOIN StringIds s ON s.id = r.nameId  WHERE ((r.globalTid >> 24) & 16777215) = ? AND ((s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?)) GROUP BY api_name ORDER BY total_time_ns DESC LIMIT 50",
+            "sync_calls": [
+              {
+                "api_name": "cudaStreamSynchronize",
+                "avg_duration_us": 800.0,
+                "call_count": 1,
+                "total_time_ms": 0.8
+              }
+            ],
+            "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+          },
+          "top_kernels": {
+            "kernels": [
+              {
+                "avg_duration_us": 1000.0,
+                "call_count": 2,
+                "device_id": 0,
+                "kernel_name": "computeKernel",
+                "total_time_ms": 2.0
+              },
+              {
+                "avg_duration_us": 2000.0,
+                "call_count": 1,
+                "device_id": 0,
+                "kernel_name": "ncclAllReduceRingKernel",
+                "total_time_ms": 2.0
+              }
+            ],
+            "table": "CUPTI_ACTIVITY_KIND_KERNEL",
+            "tiny_kernels": []
+          }
+        },
+        {
+          "launch_storm": {
+            "is_launch_storm": false,
+            "launches_per_s": 1333.3333333333333,
+            "median_kernel_us": 600.0,
+            "p50_kernel_us": 600.0,
+            "p90_kernel_us": 1500.0,
+            "p99_kernel_us": 1500.0,
+            "pct_under_10us": 0.0,
+            "pct_under_20us": 0.0,
+            "pct_under_5us": 0.0,
+            "storm_thresholds": {
+              "launches_per_s_threshold_1": 50000.0,
+              "launches_per_s_threshold_2": 100000.0,
+              "p50_kernel_us_threshold_1": 10.0,
+              "p50_kernel_us_threshold_2": 20.0
+            },
+            "total_launches": 2,
+            "window_s": 0.0015
+          },
+          "nvtx": {
+            "notes": [
+              "No NVTX table."
+            ],
+            "present": false,
+            "ranges": [],
+            "table": null
+          },
+          "pid": 222,
+          "sync": {
+            "notes": [],
+            "present": true,
+            "sql": "SELECT s.value AS api_name, COUNT(*) AS call_count, SUM(r.end-r.start) AS total_time_ns, AVG(r.end-r.start) AS avg_time_ns FROM CUPTI_ACTIVITY_KIND_RUNTIME r  JOIN StringIds s ON s.id = r.nameId  WHERE ((r.globalTid >> 24) & 16777215) = ? AND ((s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?)) GROUP BY api_name ORDER BY total_time_ns DESC LIMIT 50",
+            "sync_calls": [
+              {
+                "api_name": "cudaDeviceSynchronize",
+                "avg_duration_us": 700.0,
+                "call_count": 1,
+                "total_time_ms": 0.7
+              }
+            ],
+            "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+          },
+          "top_kernels": {
+            "kernels": [
+              {
+                "avg_duration_us": 1500.0,
+                "call_count": 1,
+                "device_id": 0,
+                "kernel_name": "ncclBroadcastRingKernel",
+                "total_time_ms": 1.5
+              },
+              {
+                "avg_duration_us": 600.0,
+                "call_count": 1,
+                "device_id": 0,
+                "kernel_name": "computeKernel",
+                "total_time_ms": 0.6
+              }
+            ],
+            "table": "CUPTI_ACTIVITY_KIND_KERNEL",
+            "tiny_kernels": []
+          }
+        }
+      ],
+      "present": true,
+      "sql": {
+        "top_pids": "SELECT ((k.globalPid >> 24) & 16777215) AS pid, SUM(k.end-k.start) AS total_ns, COUNT(*) AS launches FROM CUPTI_ACTIVITY_KIND_KERNEL k WHERE k.end > k.start AND ((k.globalPid >> 24) & 16777215) IS NOT NULL GROUP BY pid ORDER BY total_ns DESC LIMIT ?"
+      },
+      "top_pids": [
+        {
+          "kernel_launches": 3,
+          "pct_of_total_kernel_time": 65.57377049180327,
+          "pid": 111,
+          "total_kernel_time_ms": 4.0,
+          "total_kernel_time_ns": 4000000
+        },
+        {
+          "kernel_launches": 2,
+          "pct_of_total_kernel_time": 34.42622950819672,
+          "pid": 222,
+          "total_kernel_time_ms": 2.1,
+          "total_kernel_time_ns": 2100000
+        }
+      ]
+    },
+    "pid_attribution": {
+      "kernel_pid_count": 2,
+      "kernel_pid_source": "globalPid",
+      "kernel_pids_sample": [
+        111,
+        222
+      ],
+      "nvtx_pid_count": 0,
+      "nvtx_pid_source": null,
+      "nvtx_pids_sample": [],
+      "runtime_pid_count": 2,
+      "runtime_pid_source": "globalTid",
+      "runtime_pids_sample": [
+        111,
+        222
+      ]
+    },
+    "sync": {
+      "notes": [],
+      "sql": {
+        "sync_calls": "SELECT s.value AS api_name, COUNT(*) AS call_count, SUM(r.end - r.start) AS total_time_ns, AVG(r.end-r.start) AS avg_time_ns FROM CUPTI_ACTIVITY_KIND_RUNTIME r  JOIN StringIds s ON s.id = r.nameId  WHERE (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) OR (s.value LIKE ?) GROUP BY api_name ORDER BY total_time_ns DESC LIMIT ?"
+      },
+      "sync_calls": [
+        {
+          "api_name": "cudaStreamSynchronize",
+          "avg_duration_us": 800.0,
+          "call_count": 1,
+          "total_time_ms": 0.8
+        },
+        {
+          "api_name": "cudaDeviceSynchronize",
+          "avg_duration_us": 700.0,
+          "call_count": 1,
+          "total_time_ms": 0.7
+        }
+      ],
+      "table": "CUPTI_ACTIVITY_KIND_RUNTIME"
+    },
+    "top_kernels": {
+      "kernels": [
+        {
+          "avg_duration_us": 866.6666666666666,
+          "call_count": 3,
+          "device_id": 0,
+          "kernel_name": "computeKernel",
+          "max_duration_us": 1000.0,
+          "min_duration_us": 600.0,
+          "p50_duration_us": 1000.0,
+          "p90_duration_us": 1000.0,
+          "pct_total_kernel_time": 42.62295081967213,
+          "total_time_ms": 2.6,
+          "total_time_ns": 2600000
+        },
+        {
+          "avg_duration_us": 2000.0,
+          "call_count": 1,
+          "device_id": 0,
+          "kernel_name": "ncclAllReduceRingKernel",
+          "max_duration_us": 2000.0,
+          "min_duration_us": 2000.0,
+          "p50_duration_us": 2000.0,
+          "p90_duration_us": 2000.0,
+          "pct_total_kernel_time": 32.78688524590164,
+          "total_time_ms": 2.0,
+          "total_time_ns": 2000000
+        },
+        {
+          "avg_duration_us": 1500.0,
+          "call_count": 1,
+          "device_id": 0,
+          "kernel_name": "ncclBroadcastRingKernel",
+          "max_duration_us": 1500.0,
+          "min_duration_us": 1500.0,
+          "p50_duration_us": 1500.0,
+          "p90_duration_us": 1500.0,
+          "pct_total_kernel_time": 24.59016393442623,
+          "total_time_ms": 1.5,
+          "total_time_ns": 1500000
+        }
+      ],
+      "notes": [],
+      "sql": {
+        "agg": "SELECT s.value AS kernel_name, k.deviceId AS device_id, COUNT(*) AS call_count, SUM(k.end - k.start) AS total_time_ns, AVG(k.end - k.start) AS avg_time_ns, MIN(k.end - k.start) AS min_time_ns, MAX(k.end - k.start) AS max_time_ns FROM CUPTI_ACTIVITY_KIND_KERNEL k  JOIN StringIds s ON s.id = k.demangledName  GROUP BY kernel_name, device_id ORDER BY total_time_ns DESC LIMIT ?",
+        "durations": "SELECT (end-start) FROM CUPTI_ACTIVITY_KIND_KERNEL ... ORDER BY",
+        "total": "SELECT SUM(end - start) FROM CUPTI_ACTIVITY_KIND_KERNEL"
+      },
+      "table": "CUPTI_ACTIVITY_KIND_KERNEL",
+      "total_kernel_time_ns": 6100000
+    }
+  },
+  "schema": {
+    "capabilities": {
+      "cuda_graph_table": {
+        "present": false,
+        "table": null
+      },
+      "gpu_metrics_table": {
+        "present": false,
+        "table": null,
+        "target_info_table": null
+      },
+      "has_string_table": true,
+      "kernel_table": {
+        "has_correlationId": false,
+        "has_deviceId": true,
+        "has_globalPid": true,
+        "has_pid": false,
+        "has_processId": false,
+        "present": true
+      },
+      "nvtx_table": {
+        "has_end": false,
+        "has_globalTid": false,
+        "has_text": false,
+        "has_textId": false,
+        "present": false
+      },
+      "runtime_table": {
+        "has_correlationId": false,
+        "has_globalTid": true,
+        "has_name": false,
+        "has_nameId": true,
+        "has_pid": false,
+        "has_processId": false,
+        "present": true
+      }
+    },
+    "cuda_graph_table": null,
+    "gpu_metrics_table": null,
+    "kernel_pid_source": "globalPid",
+    "kernel_table": "CUPTI_ACTIVITY_KIND_KERNEL",
+    "nvtx_pid_source": null,
+    "nvtx_table": null,
+    "path": "synthetic fixture (raw trace.sqlite not committed)",
+    "runtime_pid_source": "globalTid",
+    "runtime_table": "CUPTI_ACTIVITY_KIND_RUNTIME",
+    "sqlite_version": "3.26.0",
+    "string_table": "StringIds",
+    "sync_table": "CUPTI_ACTIVITY_KIND_RUNTIME",
+    "tables": {
+      "CUPTI_ACTIVITY_KIND_KERNEL": {
+        "columns": [
+          "start",
+          "end",
+          "deviceId",
+          "contextId",
+          "streamId",
+          "globalPid",
+          "demangledName"
+        ],
+        "types": {
+          "contextId": "INT",
+          "demangledName": "INT",
+          "deviceId": "INT",
+          "end": "INT",
+          "globalPid": "INT",
+          "start": "INT",
+          "streamId": "INT"
+        }
+      },
+      "CUPTI_ACTIVITY_KIND_RUNTIME": {
+        "columns": [
+          "start",
+          "end",
+          "nameId",
+          "globalTid"
+        ],
+        "types": {
+          "end": "INT",
+          "globalTid": "INT",
+          "nameId": "INT",
+          "start": "INT"
+        }
+      },
+      "StringIds": {
+        "columns": [
+          "id",
+          "value"
+        ],
+        "types": {
+          "id": "INTEGER",
+          "value": "TEXT"
+        }
+      }
+    },
+    "target_info_gpu_metrics_table": null,
+    "timestamp_unit_assumed": "ns",
+    "timestamp_unit_guess": "ns_likely",
+    "timestamp_unit_guess_basis": "kernel_window_ns_ge_1ms"
+  },
+  "tool": {
+    "name": "nsys-llm-explain",
+    "version": "0.1.0"
+  },
+  "trace": {
+    "path": "synthetic fixture (raw trace.sqlite not committed)"
+  },
+  "warnings": [
+    "NVLink counters not found. The report cannot correlate NCCL windows with NVLink metrics for this export."
+  ]
+}

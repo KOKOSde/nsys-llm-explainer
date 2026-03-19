@@ -5,7 +5,7 @@
 
 ![nsys-llm-explainer hero diagram](docs/hero.svg)
 
-Current release: **v0.2.0**
+Current release: **v0.3.0**
 
 ### Why this exists
 
@@ -116,6 +116,59 @@ Stream concurrency and launch latency: diagnose overlap quality, CPU launch over
 
 ![Kernel waterfall](docs/screenshots/waterfall.png)
 Kernel waterfall: inspect execution ordering and quickly spot long kernels, bursty launches, and synchronization boundaries across streams.
+
+### Hugging Face Space (Gradio)
+
+A Space-ready Gradio wrapper lives in:
+
+- [spaces/hf_space/README.md](spaces/hf_space/README.md)
+- [spaces/hf_space/app.py](spaces/hf_space/app.py)
+
+Space title:
+
+- `nsys-llm-explainer — Instant Nsight Trace Analyzer for Cloud LLM Inference`
+
+This wrapper accepts `.sqlite` or `report.json`, renders quick findings/summary tabs, and exposes report/CSV downloads.
+
+### API service + client
+
+Install API/client extras:
+
+```bash
+python3 -m pip install -e .[api,client]
+```
+
+Run service:
+
+```bash
+nsys-llm-api --host 0.0.0.0 --port 8080
+```
+
+Python client and `curl` usage:
+
+- [docs/API.md](docs/API.md)
+- [examples/api_client_demo.py](examples/api_client_demo.py)
+
+### Production deploy kits
+
+Container and cloud quickstarts:
+
+- [deploy/README.md](deploy/README.md)
+- [deploy/Dockerfile.api](deploy/Dockerfile.api)
+- [deploy/docker-compose.api.yml](deploy/docker-compose.api.yml)
+- [deploy/aws/README.md](deploy/aws/README.md)
+- [deploy/gcp/README.md](deploy/gcp/README.md)
+
+### Hugging Face application pack
+
+Role-targeted resume bullets, cover letters, and execution plan:
+
+- [career/hf_cloud_ml_engineer_resume_bullets.md](career/hf_cloud_ml_engineer_resume_bullets.md)
+- [career/hf_cloud_ml_devrel_resume_bullets.md](career/hf_cloud_ml_devrel_resume_bullets.md)
+- [career/hf_cover_letter_cloud_ml_engineer.md](career/hf_cover_letter_cloud_ml_engineer.md)
+- [career/hf_cover_letter_cloud_ml_devrel.md](career/hf_cover_letter_cloud_ml_devrel.md)
+- [career/hf_30_60_90_plan.md](career/hf_30_60_90_plan.md)
+- [career/hf_portfolio_checklist.md](career/hf_portfolio_checklist.md)
 
 ### What the report includes
 
